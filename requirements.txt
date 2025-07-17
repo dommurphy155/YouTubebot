@@ -1,0 +1,2 @@
+playwright==1.41.1
+python-telegram-bot==20.3
