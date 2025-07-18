@@ -7,17 +7,24 @@ import glob
 import traceback
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from moviepy.editor import VideoFileClip
+from moviepy.editor import (
+    VideoFileClip, AudioFileClip, CompositeAudioClip, CompositeVideoClip,
+    TextClip, concatenate_videoclips
+)
+from moviepy.video.fx.resize import resize
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from telegram import Update, Bot
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import pyttsx3
+import tempfile
+import shutil
 
 UK_TZ = ZoneInfo("Europe/London")
 
 CATEGORIES = [
-    {"name": "funny", "min_sec": 5, "max_sec": 13},
+    {"name": "funny", "min_sec": 15, "max_sec": 30},
     {"name": "motivational", "min_sec": 15, "max_sec": 30},
-    {"name": "storytime", "min_sec": 20, "max_sec": 60},
+    {"name": "storytime", "min_sec": 15, "max_sec": 30},
     {"name": "trending1", "min_sec": 15, "max_sec": 30},
     {"name": "trending2", "min_sec": 15, "max_sec": 30},
 ]
@@ -25,8 +32,10 @@ CATEGORIES = [
 POST_INTERVALS = [9 * 3600, 12 * 3600, 15 * 3600, 18 * 3600]
 
 STATE_FILE = "poster_state.json"
-TEMP_DIR = "/tmp"
+TEMP_DIR = tempfile.gettempdir()
 USER_DATA_DIR = "./playwright_userdata"
+CLIPS_DIR = "./clips"  # local folder with 50+ clips, 15-30s each
+MUSIC_DIR = "./music"  # local folder with 30+ royalty-free music tracks
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_ADMIN_ID = int(os.environ.get("TELEGRAM_ADMIN_ID", "0"))
@@ -56,6 +65,10 @@ USER_AGENT = (
 
 VIEWPORT = {"width": 1366, "height": 768}
 
+def log(msg: str):
+    ts = datetime.now(UK_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{ts}] {msg}")
+
 def save_state():
     try:
         with open(STATE_FILE, "w") as f:
@@ -80,10 +93,13 @@ def cleanup_temp_files(age_seconds=86400):
                 log(f"Deleted temp file: {f}")
         except Exception:
             pass
-
-def log(msg: str):
-    ts = datetime.now(UK_TZ).strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{ts}] {msg}")
+    for f in glob.glob(f"{TEMP_DIR}/audio_*"):
+        try:
+            if os.path.getmtime(f) < cutoff:
+                os.remove(f)
+                log(f"Deleted temp file: {f}")
+        except Exception:
+            pass
 
 async def with_retry(func, *args, retries=3, base_delay=1, **kwargs):
     for i in range(retries):
@@ -96,77 +112,224 @@ async def with_retry(func, *args, retries=3, base_delay=1, **kwargs):
     raise RuntimeError(f"{func.__name__} failed after {retries} retries")
 
 def ai_optimize_script(name):
-    return {"text": f"Check out this {name} clip!", "use_tts": random.choice([True, False])}
+    # Generate simple dynamic texts per category
+    base_phrases = {
+        "funny": [
+            "Here's a hilarious moment for you!",
+            "Laugh out loud with this clip!",
+            "Comedy time — enjoy!",
+        ],
+        "motivational": [
+            "Boost your day with this!",
+            "Stay motivated with this clip!",
+            "Power through your day!",
+        ],
+        "storytime": [
+            "Here's a quick story for you.",
+            "Sit back and enjoy this tale.",
+            "Storytime begins now!",
+        ],
+        "trending1": [
+            "Check out this trending hit!",
+            "What's hot right now!",
+            "Trending vibes coming your way.",
+        ],
+        "trending2": [
+            "Don't miss this trend!",
+            "Latest trending clip!",
+            "Catch this trend before anyone else!",
+        ],
+    }
+    phrases = base_phrases.get(name, ["Enjoy this clip!"])
+    text = random.choice(phrases)
+    use_tts = True  # always use TTS for dynamic voiceover
+    return {"text": text, "use_tts": use_tts}
 
 async def generate_script(category):
+    # For now, just return the AI optimized phrase, no actual API call
     return ai_optimize_script(category["name"])
 
-async def solve_captcha(page):
-    log("CAPTCHA solving not implemented")
-    return False
-
-async def click_fallback(page, selectors, **kwargs):
-    for sel in selectors:
-        el = await page.query_selector(sel)
-        if el:
-            return await el.click(**kwargs)
-    raise PlaywrightTimeout(f"No clickable element found for selectors: {selectors}")
-
-async def fill_fallback(page, selectors, text, **kwargs):
-    for sel in selectors:
-        el = await page.query_selector(sel)
-        if el:
-            return await el.fill(text, **kwargs)
-    raise PlaywrightTimeout(f"No fillable element found for selectors: {selectors}")
-
-async def capcut_create_video(page, script_data, category):
-    try:
-        log(f"Creating video for category: {category['name']}")
-        await with_retry(page.goto, "https://www.capcut.com/", timeout=30000)
-        await with_retry(page.wait_for_load_state, "networkidle", timeout=30000)
-
-        login_btn = await page.query_selector("button:has-text('Login')")
-        if login_btn:
-            await click_fallback(page, ["button:has-text('Login')"])
-            await fill_fallback(page, ["input[type=email]"], os.environ["CAPCUT_EMAIL"])
-            await click_fallback(page, ["button:has-text('Next')"])
-            await asyncio.sleep(1)
-            await fill_fallback(page, ["input[type=password]"], os.environ["CAPCUT_PASSWORD"])
-            await click_fallback(page, ["button:has-text('Sign In')"])
-            await with_retry(page.wait_for_selector, "button:has-text('Create Project')", timeout=15000)
-
-        await click_fallback(page, ["button:has-text('Create Project')"])
-        await asyncio.sleep(1)
-
-        await click_fallback(page, ["button#script-to-video-btn"])
-        await fill_fallback(page, ["textarea#script-input"], script_data["text"])
-
-        if script_data["use_tts"]:
-            await click_fallback(page, ["button#tts-toggle"])
-            await page.select_option("select#voice-select", "en-US-Natural")
-
-        await click_fallback(page, ["button#generate-video"])
-        await asyncio.sleep(7000)
-
-        await click_fallback(page, ["button:has-text('Export')"])
-        async with page.expect_download() as info:
-            await click_fallback(page, ["button:has-text('Download')"])
-        dl = await info.value
-        path = f"{TEMP_DIR}/video_{category['name']}_{int(time.time())}.mp4"
-        await dl.save_as(path)
-
-        clip = VideoFileClip(path)
-        if clip.duration > category["max_sec"]:
-            trimmed = path.replace(".mp4", "_trimmed.mp4")
-            clip.subclip(0, category["max_sec"]).write_videofile(trimmed, audio_codec="aac", logger=None)
-            clip.close()
-            log(f"Trimmed video to {category['max_sec']} seconds")
-            return trimmed
-        clip.close()
-        return path
-    except Exception:
-        log(traceback.format_exc())
+def select_random_clip(category):
+    # Select a random clip from local clips directory, 15-30s duration enforced
+    all_clips = glob.glob(os.path.join(CLIPS_DIR, "*.mp4"))
+    if not all_clips:
+        log("No clips found in clips directory.")
         return None
+    random.shuffle(all_clips)
+    for clip_path in all_clips:
+        try:
+            clip = VideoFileClip(clip_path)
+            duration = clip.duration
+            clip.close()
+            if category["min_sec"] <= duration <= category["max_sec"]:
+                return clip_path
+        except Exception as e:
+            log(f"Error reading clip {clip_path}: {e}")
+    # fallback if none fits duration strictly, pick any
+    return random.choice(all_clips)
+
+def select_random_music():
+    # Select a random music track from local music directory
+    all_music = glob.glob(os.path.join(MUSIC_DIR, "*.mp3")) + glob.glob(os.path.join(MUSIC_DIR, "*.wav"))
+    if not all_music:
+        log("No music tracks found in music directory.")
+        return None
+    return random.choice(all_music)
+
+def generate_tts_audio(text, output_path):
+    engine = pyttsx3.init()
+    # Configure voice rate, volume, voice here as needed
+    engine.setProperty('rate', 150)
+    engine.save_to_file(text, output_path)
+    engine.runAndWait()
+
+def compose_final_video(clip_path, tts_audio_path, bg_music_path, category):
+    # Load video clip
+    video_clip = VideoFileClip(clip_path)
+
+    # Resize to 1080x1920 vertical if not already, keep aspect ratio by cropping/padding
+    target_width, target_height = 1080, 1920
+
+    # Resize and crop to fit vertical Shorts format
+    video_clip = video_clip.resize(height=target_height)
+    if video_clip.w > target_width:
+        x1 = (video_clip.w - target_width) // 2
+        video_clip = video_clip.crop(x1=x1, width=target_width)
+    elif video_clip.w < target_width:
+        # pad with black bars on sides if narrower
+        video_clip = video_clip.margin(left=(target_width - video_clip.w)//2,
+                                       right=(target_width - video_clip.w)//2,
+                                       color=(0,0,0))
+
+    # Trim or pad duration to max_sec exactly
+    if video_clip.duration > category["max_sec"]:
+        video_clip = video_clip.subclip(0, category["max_sec"])
+    elif video_clip.duration < category["min_sec"]:
+        # Pad with last frame to reach min_sec (rare)
+        pad_duration = category["min_sec"] - video_clip.duration
+        last_frame = video_clip.to_ImageClip(video_clip.duration-0.1).set_duration(pad_duration)
+        video_clip = concatenate_videoclips([video_clip, last_frame])
+
+    # Add text overlay of script text at bottom center
+    # Using 50pt font, white with black stroke for readability
+    text_clip = TextClip(
+        last_post_info.get("script_text", ""),
+        fontsize=50,
+        font='Arial-Bold',
+        color='white',
+        stroke_color='black',
+        stroke_width=2,
+        method='caption',
+        size=(target_width - 100, None),
+    ).set_duration(video_clip.duration).set_position(("center", "bottom")).margin(bottom=40, opacity=0)
+
+    # Load audio clips
+    audio_clips = []
+
+    if os.path.exists(tts_audio_path):
+        tts_audio = AudioFileClip(tts_audio_path).volumex(1.0)
+        audio_clips.append(tts_audio)
+
+    if bg_music_path and os.path.exists(bg_music_path):
+        bg_audio = AudioFileClip(bg_music_path).volumex(0.15)  # lower volume background music
+        audio_clips.append(bg_audio)
+
+    if audio_clips:
+        composite_audio = CompositeAudioClip(audio_clips)
+        composite_audio = composite_audio.set_duration(video_clip.duration)
+    else:
+        composite_audio = None
+
+    video_with_text = CompositeVideoClip([video_clip, text_clip])
+    if composite_audio:
+        final_video = video_with_text.set_audio(composite_audio)
+    else:
+        final_video = video_with_text.set_audio(video_clip.audio)
+
+    # Save final video
+    output_path = os.path.join(TEMP_DIR, f"video_{category['name']}_{int(time.time())}.mp4")
+    final_video.write_videofile(
+        output_path,
+        codec="libx264",
+        audio_codec="aac",
+        threads=4,
+        preset="fast",
+        ffmpeg_params=["-profile:v", "baseline", "-level", "3.0"],
+        verbose=False,
+        logger=None,
+    )
+    video_clip.close()
+    video_with_text.close()
+    final_video.close()
+    for ac in audio_clips:
+        ac.close()
+    return output_path
+
+async def post_one_video(playwright, category, headless=True):
+    cleanup_temp_files()
+    browser = await playwright.chromium.launch_persistent_context(
+        USER_DATA_DIR,
+        headless=headless,
+        accept_downloads=True,
+        viewport=VIEWPORT,
+        user_agent=USER_AGENT,
+        locale="en-US",
+        args=[
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-accelerated-2d-canvas",
+            "--no-zygote",
+            "--single-process",
+            "--disable-gpu",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+            "--disable-features=site-per-process",
+        ],
+    )
+    browser.add_init_script(STEALTH_JS)
+
+    page = await browser.new_page()
+    try:
+        script_data = await generate_script(category)
+        last_post_info["script_text"] = script_data["text"]
+
+        clip_path = select_random_clip(category)
+        if not clip_path:
+            log("No suitable clip found, aborting post.")
+            return False
+
+        music_path = select_random_music()
+        # Generate TTS audio
+        tts_audio_path = os.path.join(TEMP_DIR, f"audio_tts_{int(time.time())}.mp3")
+        generate_tts_audio(script_data["text"], tts_audio_path)
+
+        final_video_path = compose_final_video(clip_path, tts_audio_path, music_path, category)
+        if not final_video_path or not os.path.exists(final_video_path):
+            log("Final video composition failed.")
+            return False
+
+        title, description = generate_title_description(category, script_data)
+
+        success = await youtube_upload_video(page, final_video_path, category, title, description)
+        if success:
+            last_post_info.update({
+                "category": category["name"],
+                "timestamp": datetime.now(UK_TZ).isoformat()
+            })
+            save_state()
+        return success
+    finally:
+        await browser.close()
+        # Cleanup temporary TTS audio and final video
+        try:
+            if os.path.exists(tts_audio_path):
+                os.remove(tts_audio_path)
+            if os.path.exists(final_video_path):
+                os.remove(final_video_path)
+        except Exception:
+            pass
 
 async def youtube_upload_video(page, video_path, category, title, description):
     try:
@@ -183,7 +346,7 @@ async def youtube_upload_video(page, video_path, category, title, description):
             await with_retry(page.wait_for_load_state, "networkidle", timeout=30000)
 
             captcha_img = await page.query_selector("img[alt='CAPTCHA']")
-            if captcha_img and not await solve_captcha(page):
+            if captcha_img:
                 Bot(TELEGRAM_TOKEN).send_message(TELEGRAM_ADMIN_ID, f"CAPTCHA on YouTube for {category['name']}")
                 return False
 
@@ -226,50 +389,19 @@ def generate_title_description(category, script_data):
     description = f"{title}\n\n#Shorts #AI"
     return title, description
 
-async def post_one_video(playwright, category, headless=True):
-    cleanup_temp_files()
-    browser = await playwright.chromium.launch_persistent_context(
-        USER_DATA_DIR,
-        headless=headless,
-        accept_downloads=True,
-        viewport=VIEWPORT,
-        user_agent=USER_AGENT,
-        locale="en-US",
-        args=[
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-accelerated-2d-canvas",
-            "--no-zygote",
-            "--single-process",
-            "--disable-gpu",
-            "--disable-background-timer-throttling",
-            "--disable-backgrounding-occluded-windows",
-            "--disable-renderer-backgrounding",
-            "--disable-features=site-per-process",  # minor perf gain
-        ],
-    )
-    browser.add_init_script(STEALTH_JS)
+async def click_fallback(page, selectors, **kwargs):
+    for sel in selectors:
+        el = await page.query_selector(sel)
+        if el:
+            return await el.click(**kwargs)
+    raise PlaywrightTimeout(f"No clickable element found for selectors: {selectors}")
 
-    page = await browser.new_page()
-    try:
-        script_data = await generate_script(category)
-        video_path = await capcut_create_video(page, script_data, category)
-        if not video_path:
-            log("Video creation failed")
-            return False
-
-        title, description = generate_title_description(category, script_data)
-        success = await youtube_upload_video(page, video_path, category, title, description)
-        if success:
-            last_post_info.update({
-                "category": category["name"],
-                "timestamp": datetime.now(UK_TZ).isoformat()
-            })
-            save_state()
-        return success
-    finally:
-        await browser.close()
+async def fill_fallback(page, selectors, text, **kwargs):
+    for sel in selectors:
+        el = await page.query_selector(sel)
+        if el:
+            return await el.fill(text, **kwargs)
+    raise PlaywrightTimeout(f"No fillable element found for selectors: {selectors}")
 
 async def scheduler():
     load_state()
@@ -330,7 +462,7 @@ async def start_scheduler(app):
     app.create_task(scheduler())
 
 def main():
-    required_vars = ["CAPCUT_EMAIL", "CAPCUT_PASSWORD", "YOUTUBE_EMAIL", "YOUTUBE_PASSWORD", "TELEGRAM_TOKEN", "TELEGRAM_ADMIN_ID"]
+    required_vars = ["YOUTUBE_EMAIL", "YOUTUBE_PASSWORD", "TELEGRAM_TOKEN", "TELEGRAM_ADMIN_ID"]
     missing = [v for v in required_vars if not os.environ.get(v)]
     if missing:
         print(f"Missing environment variables: {', '.join(missing)}")
