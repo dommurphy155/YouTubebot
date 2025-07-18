@@ -34,8 +34,8 @@ POST_INTERVALS = [9 * 3600, 12 * 3600, 15 * 3600, 18 * 3600]
 STATE_FILE = "poster_state.json"
 TEMP_DIR = tempfile.gettempdir()
 USER_DATA_DIR = "./playwright_userdata"
-CLIPS_DIR = "./clips"  # local folder with 50+ clips, 15-30s each
-MUSIC_DIR = "./music"  # local folder with 30+ royalty-free music tracks
+CLIPS_DIR = "./clips"
+MUSIC_DIR = "./music"
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_ADMIN_ID = int(os.environ.get("TELEGRAM_ADMIN_ID", "0"))
@@ -112,7 +112,6 @@ async def with_retry(func, *args, retries=3, base_delay=1, **kwargs):
     raise RuntimeError(f"{func.__name__} failed after {retries} retries")
 
 def ai_optimize_script(name):
-    # Generate simple dynamic texts per category
     base_phrases = {
         "funny": [
             "Here's a hilarious moment for you!",
@@ -142,15 +141,13 @@ def ai_optimize_script(name):
     }
     phrases = base_phrases.get(name, ["Enjoy this clip!"])
     text = random.choice(phrases)
-    use_tts = True  # always use TTS for dynamic voiceover
+    use_tts = True
     return {"text": text, "use_tts": use_tts}
 
 async def generate_script(category):
-    # For now, just return the AI optimized phrase, no actual API call
     return ai_optimize_script(category["name"])
 
 def select_random_clip(category):
-    # Select a random clip from local clips directory, 15-30s duration enforced
     all_clips = glob.glob(os.path.join(CLIPS_DIR, "*.mp4"))
     if not all_clips:
         log("No clips found in clips directory.")
@@ -165,11 +162,9 @@ def select_random_clip(category):
                 return clip_path
         except Exception as e:
             log(f"Error reading clip {clip_path}: {e}")
-    # fallback if none fits duration strictly, pick any
     return random.choice(all_clips)
 
 def select_random_music():
-    # Select a random music track from local music directory
     all_music = glob.glob(os.path.join(MUSIC_DIR, "*.mp3")) + glob.glob(os.path.join(MUSIC_DIR, "*.wav"))
     if not all_music:
         log("No music tracks found in music directory.")
@@ -178,40 +173,30 @@ def select_random_music():
 
 def generate_tts_audio(text, output_path):
     engine = pyttsx3.init()
-    # Configure voice rate, volume, voice here as needed
     engine.setProperty('rate', 150)
     engine.save_to_file(text, output_path)
     engine.runAndWait()
 
 def compose_final_video(clip_path, tts_audio_path, bg_music_path, category):
-    # Load video clip
     video_clip = VideoFileClip(clip_path)
 
-    # Resize to 1080x1920 vertical if not already, keep aspect ratio by cropping/padding
     target_width, target_height = 1080, 1920
-
-    # Resize and crop to fit vertical Shorts format
     video_clip = video_clip.resize(height=target_height)
     if video_clip.w > target_width:
         x1 = (video_clip.w - target_width) // 2
         video_clip = video_clip.crop(x1=x1, width=target_width)
     elif video_clip.w < target_width:
-        # pad with black bars on sides if narrower
         video_clip = video_clip.margin(left=(target_width - video_clip.w)//2,
                                        right=(target_width - video_clip.w)//2,
                                        color=(0,0,0))
 
-    # Trim or pad duration to max_sec exactly
     if video_clip.duration > category["max_sec"]:
         video_clip = video_clip.subclip(0, category["max_sec"])
     elif video_clip.duration < category["min_sec"]:
-        # Pad with last frame to reach min_sec (rare)
         pad_duration = category["min_sec"] - video_clip.duration
         last_frame = video_clip.to_ImageClip(video_clip.duration-0.1).set_duration(pad_duration)
         video_clip = concatenate_videoclips([video_clip, last_frame])
 
-    # Add text overlay of script text at bottom center
-    # Using 50pt font, white with black stroke for readability
     text_clip = TextClip(
         last_post_info.get("script_text", ""),
         fontsize=50,
@@ -223,7 +208,6 @@ def compose_final_video(clip_path, tts_audio_path, bg_music_path, category):
         size=(target_width - 100, None),
     ).set_duration(video_clip.duration).set_position(("center", "bottom")).margin(bottom=40, opacity=0)
 
-    # Load audio clips
     audio_clips = []
 
     if os.path.exists(tts_audio_path):
@@ -231,7 +215,7 @@ def compose_final_video(clip_path, tts_audio_path, bg_music_path, category):
         audio_clips.append(tts_audio)
 
     if bg_music_path and os.path.exists(bg_music_path):
-        bg_audio = AudioFileClip(bg_music_path).volumex(0.15)  # lower volume background music
+        bg_audio = AudioFileClip(bg_music_path).volumex(0.15)
         audio_clips.append(bg_audio)
 
     if audio_clips:
@@ -246,7 +230,6 @@ def compose_final_video(clip_path, tts_audio_path, bg_music_path, category):
     else:
         final_video = video_with_text.set_audio(video_clip.audio)
 
-    # Save final video
     output_path = os.path.join(TEMP_DIR, f"video_{category['name']}_{int(time.time())}.mp4")
     final_video.write_videofile(
         output_path,
@@ -301,7 +284,6 @@ async def post_one_video(playwright, category, headless=True):
             return False
 
         music_path = select_random_music()
-        # Generate TTS audio
         tts_audio_path = os.path.join(TEMP_DIR, f"audio_tts_{int(time.time())}.mp3")
         generate_tts_audio(script_data["text"], tts_audio_path)
 
@@ -322,7 +304,6 @@ async def post_one_video(playwright, category, headless=True):
         return success
     finally:
         await browser.close()
-        # Cleanup temporary TTS audio and final video
         try:
             if os.path.exists(tts_audio_path):
                 os.remove(tts_audio_path)
