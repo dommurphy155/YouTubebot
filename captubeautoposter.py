@@ -317,19 +317,7 @@ async def youtube_upload_video(page, video_path, category, title, description):
         log(f"Uploading video for category: {category['name']}")
         await with_retry(page.goto, "https://www.youtube.com/upload", timeout=30000)
 
-        email_input = await page.query_selector("input[type=email]")
-        if email_input:
-            await fill_fallback(page, ["input[type=email]"], os.environ["YOUTUBE_EMAIL"])
-            await click_fallback(page, ["button:has-text('Next')"])
-            await asyncio.sleep(1.5)
-            await fill_fallback(page, ["input[type=password]"], os.environ["YOUTUBE_PASSWORD"])
-            await click_fallback(page, ["button:has-text('Next')"])
-            await with_retry(page.wait_for_load_state, "networkidle", timeout=30000)
-
-            captcha_img = await page.query_selector("img[alt='CAPTCHA']")
-            if captcha_img:
-                Bot(TELEGRAM_TOKEN).send_message(TELEGRAM_ADMIN_ID, f"CAPTCHA on YouTube for {category['name']}")
-                return False
+        # Skip login steps because we rely on persistent context logged in session
 
         input_file = await page.query_selector("input[type=file]")
         if not input_file:
@@ -443,8 +431,11 @@ async def start_scheduler(app):
     app.create_task(scheduler())
 
 def main():
-    required_vars = ["YOUTUBE_EMAIL", "YOUTUBE_PASSWORD", "TELEGRAM_TOKEN", "TELEGRAM_ADMIN_ID"]
-    missing = [v for v in required_vars if not os.environ.get(v)]
+    missing = []
+    if not TELEGRAM_TOKEN:
+        missing.append("TELEGRAM_TOKEN")
+    if not TELEGRAM_ADMIN_ID or TELEGRAM_ADMIN_ID == 0:
+        missing.append("TELEGRAM_ADMIN_ID")
     if missing:
         print(f"Missing environment variables: {', '.join(missing)}")
         return
