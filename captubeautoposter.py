@@ -57,13 +57,19 @@ USER_AGENT = (
 VIEWPORT = {"width": 1366, "height": 768}
 
 def save_state():
-    with open(STATE_FILE, "w") as f:
-        json.dump(last_post_info, f)
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump(last_post_info, f)
+    except Exception as e:
+        log(f"Failed to save state: {e}")
 
 def load_state():
     if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r") as f:
-            last_post_info.update(json.load(f))
+        try:
+            with open(STATE_FILE, "r") as f:
+                last_post_info.update(json.load(f))
+        except Exception as e:
+            log(f"Failed to load state: {e}")
 
 def cleanup_temp_files(age_seconds=86400):
     cutoff = time.time() - age_seconds
@@ -71,24 +77,27 @@ def cleanup_temp_files(age_seconds=86400):
         try:
             if os.path.getmtime(f) < cutoff:
                 os.remove(f)
+                log(f"Deleted temp file: {f}")
         except Exception:
-            pass
+            pass  # don't stop cleanup on error
 
 def log(msg: str):
     ts = datetime.now(UK_TZ).strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts}] {msg}")
 
-async def with_retry(func, *args, retries=5, base_delay=2, **kwargs):
+async def with_retry(func, *args, retries=3, base_delay=1, **kwargs):
+    # Less retries, shorter delays to save CPU/wait
     for i in range(retries):
         try:
             return await func(*args, **kwargs)
         except Exception as e:
-            delay = base_delay * (2 ** i) + random.uniform(0, 1)
+            delay = base_delay * (2 ** i) + random.uniform(0, 0.5)
             log(f"Retry {i+1}/{retries} for {func.__name__}: {e}")
             await asyncio.sleep(delay)
     raise RuntimeError(f"{func.__name__} failed after {retries} retries")
 
 def ai_optimize_script(name):
+    # Keep simple - no external calls or heavy AI logic
     return {"text": f"Check out this {name} clip!", "use_tts": random.choice([True, False])}
 
 async def generate_script(category):
@@ -115,20 +124,21 @@ async def fill_fallback(page, selectors, text, **kwargs):
 async def capcut_create_video(page, script_data, category):
     try:
         log(f"Creating video for category: {category['name']}")
-        await with_retry(page.goto, "https://www.capcut.com/", timeout=60000)
-        await with_retry(page.wait_for_load_state, "networkidle", timeout=60000)
+        await with_retry(page.goto, "https://www.capcut.com/", timeout=30000)
+        await with_retry(page.wait_for_load_state, "networkidle", timeout=30000)
 
-        if await page.query_selector("button:has-text('Login')"):
+        login_btn = await page.query_selector("button:has-text('Login')")
+        if login_btn:
             await click_fallback(page, ["button:has-text('Login')"])
             await fill_fallback(page, ["input[type=email]"], os.environ["CAPCUT_EMAIL"])
             await click_fallback(page, ["button:has-text('Next')"])
-            await page.wait_for_timeout(1500)
+            await asyncio.sleep(1)
             await fill_fallback(page, ["input[type=password]"], os.environ["CAPCUT_PASSWORD"])
             await click_fallback(page, ["button:has-text('Sign In')"])
-            await with_retry(page.wait_for_selector, "button:has-text('Create Project')", timeout=30000)
+            await with_retry(page.wait_for_selector, "button:has-text('Create Project')", timeout=15000)
 
         await click_fallback(page, ["button:has-text('Create Project')"])
-        await page.wait_for_timeout(2000)
+        await asyncio.sleep(1)
 
         await click_fallback(page, ["button#script-to-video-btn"])
         await fill_fallback(page, ["textarea#script-input"], script_data["text"])
@@ -138,7 +148,7 @@ async def capcut_create_video(page, script_data, category):
             await page.select_option("select#voice-select", "en-US-Natural")
 
         await click_fallback(page, ["button#generate-video"])
-        await page.wait_for_timeout(10000)
+        await asyncio.sleep(7000)  # Reduced wait, aggressive but practical
 
         await click_fallback(page, ["button:has-text('Export')"])
         async with page.expect_download() as info:
@@ -150,33 +160,34 @@ async def capcut_create_video(page, script_data, category):
         clip = VideoFileClip(path)
         if clip.duration > category["max_sec"]:
             trimmed = path.replace(".mp4", "_trimmed.mp4")
-            clip.subclip(0, category["max_sec"]).write_videofile(trimmed, audio_codec="aac")
+            clip.subclip(0, category["max_sec"]).write_videofile(trimmed, audio_codec="aac", logger=None)
             clip.close()
             log(f"Trimmed video to {category['max_sec']} seconds")
             return trimmed
         clip.close()
         return path
-    except:
+    except Exception:
         log(traceback.format_exc())
         return None
 
 async def youtube_upload_video(page, video_path, category, title, description):
     try:
         log(f"Uploading video for category: {category['name']}")
-        await with_retry(page.goto, "https://www.youtube.com/upload", timeout=60000)
+        await with_retry(page.goto, "https://www.youtube.com/upload", timeout=30000)
 
-        if await page.query_selector("input[type=email]"):
+        email_input = await page.query_selector("input[type=email]")
+        if email_input:
             await fill_fallback(page, ["input[type=email]"], os.environ["YOUTUBE_EMAIL"])
             await click_fallback(page, ["button:has-text('Next')"])
-            await asyncio.sleep(2)
+            await asyncio.sleep(1.5)
             await fill_fallback(page, ["input[type=password]"], os.environ["YOUTUBE_PASSWORD"])
             await click_fallback(page, ["button:has-text('Next')"])
-            await with_retry(page.wait_for_load_state, "networkidle", timeout=60000)
+            await with_retry(page.wait_for_load_state, "networkidle", timeout=30000)
 
-            if await page.query_selector("img[alt='CAPTCHA']"):
-                if not await solve_captcha(page):
-                    Bot(TELEGRAM_TOKEN).send_message(TELEGRAM_ADMIN_ID, f"CAPTCHA on YouTube for {category['name']}")
-                    return False
+            captcha_img = await page.query_selector("img[alt='CAPTCHA']")
+            if captcha_img and not await solve_captcha(page):
+                Bot(TELEGRAM_TOKEN).send_message(TELEGRAM_ADMIN_ID, f"CAPTCHA on YouTube for {category['name']}")
+                return False
 
         input_file = await page.query_selector("input[type=file]")
         if not input_file:
@@ -185,7 +196,7 @@ async def youtube_upload_video(page, video_path, category, title, description):
 
         await input_file.set_input_files(video_path)
 
-        await with_retry(page.wait_for_selector, "#textbox[aria-label='Title']", timeout=60000)
+        await with_retry(page.wait_for_selector, "#textbox[aria-label='Title']", timeout=30000)
         await page.fill("#textbox[aria-label='Title']", title)
         await page.fill("#textbox[aria-label='Description']", description)
 
@@ -193,15 +204,15 @@ async def youtube_upload_video(page, video_path, category, title, description):
 
         for _ in range(3):
             await click_fallback(page, ["ytcp-button:has-text('Next')"])
-            await asyncio.sleep(2)
+            await asyncio.sleep(1.5)
 
         await click_fallback(page, ["tp-yt-paper-radio-button[name='PUBLIC']"])
         await click_fallback(page, ["ytcp-button:has-text('Publish')"])
 
-        await with_retry(page.wait_for_selector, "text=Video published", timeout=60000)
+        await with_retry(page.wait_for_selector, "text=Video published", timeout=30000)
         log("Upload successful")
         return True
-    except:
+    except Exception:
         log(traceback.format_exc())
         return False
 
@@ -226,6 +237,19 @@ async def post_one_video(playwright, category, headless=True):
         viewport=VIEWPORT,
         user_agent=USER_AGENT,
         locale="en-US",
+        args=[
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-accelerated-2d-canvas",
+            "--no-zygote",
+            "--single-process",
+            "--disable-gpu",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+        ],
+        # Reduce concurrency and memory use on your VPS
     )
     browser.add_init_script(STEALTH_JS)
 
