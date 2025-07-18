@@ -9,3 +9,4 @@ tinydb==4.8.0
 pytz==2023.3
 requests==2.31.0
 async_timeout==4.0.2
+pyttsx3==2.90
