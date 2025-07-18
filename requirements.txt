@@ -6,3 +6,6 @@ loguru==0.7.2
 tzdata==2024.1
 httpx==0.26.0
 tinydb==4.8.0
+pytz==2023.3
+requests==2.31.0
+async_timeout==4.0.2
