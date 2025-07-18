@@ -246,18 +246,28 @@ async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             t.cancel()
     await context.application.stop()
 
-async def main():
+async def start_scheduler(app):
+    app.create_task(scheduler())
+
+def main():
     needed = ["CAPCUT_EMAIL", "CAPCUT_PASSWORD", "YOUTUBE_EMAIL", "YOUTUBE_PASSWORD", "TELEGRAM_TOKEN"]
     missing = [v for v in needed if not os.environ.get(v)]
     if missing:
         print("❗ Missing env:", ", ".join(missing))
         return
+
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("postnow", postnow))
     app.add_handler(CommandHandler("stop", stop_cmd))
+
+    async def on_post_init(app):
+        await start_scheduler(app)
+
+    app.post_init = on_post_init
+
     log("Bot starting, scheduler engaged")
-    await asyncio.gather(app.run_polling(), scheduler())
+    app.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
