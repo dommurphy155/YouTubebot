@@ -5,6 +5,9 @@ import random
 import shutil
 from pathlib import Path
 import pyttsx3
+import json
+from tenacity import retry, stop_after_attempt, wait_fixed
+from concurrent.futures import ThreadPoolExecutor
 
 CLIPS_DIR = Path("clips")
 MUSIC_DIR = Path("music")
@@ -14,154 +17,179 @@ CLIPS_DIR.mkdir(exist_ok=True)
 MUSIC_DIR.mkdir(exist_ok=True)
 VOICE_DIR.mkdir(exist_ok=True)
 
-# YouTube playlists or channels with royalty-free clips/music (example placeholders)
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " \
+             "(KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+
 ROYALTY_FREE_CLIP_PLAYLISTS = [
     "https://www.youtube.com/playlist?list=PLrEnWoR732-BHrPp_Pm8_VleD68f9s14-",
-    # Add more legit royalty-free clip playlists
 ]
 
 ROYALTY_FREE_MUSIC_PLAYLISTS = [
     "https://www.youtube.com/playlist?list=PLMC9KNkIncKtPzgY-5rmhvj7fax8fdxoj",
-    # Add more legit royalty-free music playlists
 ]
 
-async def download_videos(output_dir: Path, playlists: list[str], count: int, min_duration=15, max_duration=30):
-    """
-    Use yt-dlp to download count number of random videos from given playlists.
-    Filters videos by duration (seconds).
-    """
-    print(f"Starting download of {count} videos into {output_dir}...")
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
+async def run_yt_dlp_cmd(args):
+    proc = await asyncio.create_subprocess_exec(
+        "yt-dlp",
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(f"yt-dlp failed: {stderr.decode().strip()}")
+    return stdout.decode()
 
+async def fetch_playlist_videos(playlist_url):
+    # Get flat playlist metadata JSON lines
+    output = await run_yt_dlp_cmd([
+        "--flat-playlist",
+        "-j",
+        playlist_url,
+        "--user-agent", USER_AGENT,
+    ])
+    videos = []
+    for line in output.splitlines():
+        try:
+            videos.append(json.loads(line))
+        except Exception:
+            continue
+    return videos
+
+async def fetch_video_metadata(video_url):
+    output = await run_yt_dlp_cmd([
+        "-j",
+        video_url,
+        "--user-agent", USER_AGENT,
+    ])
+    return json.loads(output)
+
+async def download_video(video_url, filename):
+    await run_yt_dlp_cmd([
+        "-f", "mp4",
+        "-o", str(filename),
+        video_url,
+        "--user-agent", USER_AGENT,
+    ])
+
+async def download_audio(audio_url, filename):
+    await run_yt_dlp_cmd([
+        "-x", "--audio-format", "mp3",
+        "-o", str(filename),
+        audio_url,
+        "--user-agent", USER_AGENT,
+    ])
+
+def generate_voiceover_file(quote, filename):
+    engine = pyttsx3.init()
+    engine.setProperty('rate', 150)
+    voices = engine.getProperty('voices')
+    if voices:
+        engine.setProperty('voice', voices[0].id)
+    engine.save_to_file(quote, str(filename))
+    engine.runAndWait()
+
+async def download_videos(output_dir: Path, playlists: list[str], count: int, min_duration=15, max_duration=30):
+    print(f"[INFO] Starting download of up to {count} videos into {output_dir}...")
     downloaded = 0
     for playlist_url in playlists:
         if downloaded >= count:
             break
-
-        # Download metadata only, to filter by duration
-        proc = await asyncio.create_subprocess_exec(
-            "yt-dlp",
-            "--flat-playlist",
-            "-j",
-            playlist_url,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await proc.communicate()
-        videos_info = [json.loads(line) for line in stdout.decode().splitlines()]
-        random.shuffle(videos_info)
+        try:
+            videos_info = await fetch_playlist_videos(playlist_url)
+            random.shuffle(videos_info)
+        except Exception as e:
+            print(f"[WARN] Failed to fetch playlist {playlist_url}: {e}")
+            continue
 
         for video in videos_info:
             if downloaded >= count:
                 break
-            vid_url = f"https://www.youtube.com/watch?v={video['id']}"
-
-            # Fetch duration metadata of video before downloading (to filter)
-            proc = await asyncio.create_subprocess_exec(
-                "yt-dlp",
-                "-j",
-                vid_url,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            out, _ = await proc.communicate()
-            meta = json.loads(out.decode())
-            duration = meta.get("duration", 0)
-            if not (min_duration <= duration <= max_duration):
+            vid_id = video.get("id")
+            if not vid_id:
                 continue
-
-            # Download video
-            filename = output_dir / f"{video['id']}.mp4"
+            vid_url = f"https://www.youtube.com/watch?v={vid_id}"
+            filename = output_dir / f"{vid_id}.mp4"
             if filename.exists():
                 downloaded += 1
-                continue  # already downloaded
-
-            print(f"Downloading video {vid_url} ({duration}s)...")
-            proc = await asyncio.create_subprocess_exec(
-                "yt-dlp",
-                "-f", "mp4",
-                "-o", str(filename),
-                vid_url,
-            )
-            await proc.communicate()
-            downloaded += 1
-
-    print(f"Downloaded {downloaded} videos into {output_dir}")
+                continue
+            try:
+                meta = await fetch_video_metadata(vid_url)
+                duration = meta.get("duration", 0)
+                if not (min_duration <= duration <= max_duration):
+                    continue
+            except Exception:
+                continue
+            try:
+                print(f"[INFO] Downloading video {vid_url} ({duration}s)...")
+                await download_video(vid_url, filename)
+                downloaded += 1
+            except Exception as e:
+                print(f"[WARN] Failed to download video {vid_url}: {e}")
+                continue
+    print(f"[INFO] Downloaded {downloaded} videos into {output_dir}")
 
 async def download_music(output_dir: Path, playlists: list[str], count: int):
-    """
-    Download audio files only from music playlists using yt-dlp.
-    """
-    print(f"Starting download of {count} music tracks into {output_dir}...")
-
+    print(f"[INFO] Starting download of up to {count} music tracks into {output_dir}...")
     downloaded = 0
     for playlist_url in playlists:
         if downloaded >= count:
             break
-
-        proc = await asyncio.create_subprocess_exec(
-            "yt-dlp",
-            "--flat-playlist",
-            "-j",
-            playlist_url,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await proc.communicate()
-        tracks_info = [json.loads(line) for line in stdout.decode().splitlines()]
-        random.shuffle(tracks_info)
+        try:
+            tracks_info = await fetch_playlist_videos(playlist_url)
+            random.shuffle(tracks_info)
+        except Exception as e:
+            print(f"[WARN] Failed to fetch music playlist {playlist_url}: {e}")
+            continue
 
         for track in tracks_info:
             if downloaded >= count:
                 break
-            track_url = f"https://www.youtube.com/watch?v={track['id']}"
-            filename = output_dir / f"{track['id']}.mp3"
+            track_id = track.get("id")
+            if not track_id:
+                continue
+            track_url = f"https://www.youtube.com/watch?v={track_id}"
+            filename = output_dir / f"{track_id}.mp3"
             if filename.exists():
                 downloaded += 1
                 continue
-
-            print(f"Downloading music track {track_url} ...")
-            proc = await asyncio.create_subprocess_exec(
-                "yt-dlp",
-                "-x", "--audio-format", "mp3",
-                "-o", str(filename),
-                track_url,
-            )
-            await proc.communicate()
-            downloaded += 1
-
-    print(f"Downloaded {downloaded} music tracks into {output_dir}")
+            try:
+                print(f"[INFO] Downloading music track {track_url}...")
+                await download_audio(track_url, filename)
+                downloaded += 1
+            except Exception as e:
+                print(f"[WARN] Failed to download music track {track_url}: {e}")
+                continue
+    print(f"[INFO] Downloaded {downloaded} music tracks into {output_dir}")
 
 async def generate_dynamic_voiceovers(output_dir: Path, count: int):
-    """
-    Generate voiceover audio files from a list of motivational/funny quotes using pyttsx3 TTS locally.
-    """
-    print(f"Generating {count} dynamic voiceovers into {output_dir}...")
-
+    print(f"[INFO] Generating {count} dynamic voiceovers into {output_dir}...")
     quotes = [
         "Believe you can and you're halfway there.",
         "Stay positive, work hard, make it happen.",
         "The only limit to our realization of tomorrow is our doubts of today.",
         "Dream big and dare to fail.",
         "Keep going, you're getting there.",
-        # Add 30-50 more or pull dynamically from local file
     ]
+    # Using thread pool to avoid blocking event loop
+    loop = asyncio.get_running_loop()
+    executor = ThreadPoolExecutor(max_workers=2)
 
-    engine = pyttsx3.init()
-    engine.setProperty('rate', 150)
-    voices = engine.getProperty('voices')
-    if voices:
-        engine.setProperty('voice', voices[0].id)
-
+    generated = 0
     for i in range(count):
-        quote = random.choice(quotes)
         filename = output_dir / f"voiceover_{i+1}.mp3"
         if filename.exists():
+            generated += 1
             continue
-        engine.save_to_file(quote, str(filename))
-        engine.runAndWait()
-        print(f"Generated voiceover: {filename}")
-
-    print(f"Generated {count} voiceovers in {output_dir}")
+        quote = random.choice(quotes)
+        try:
+            await loop.run_in_executor(executor, generate_voiceover_file, quote, filename)
+            print(f"[INFO] Generated voiceover: {filename}")
+            generated += 1
+        except Exception as e:
+            print(f"[WARN] Failed to generate voiceover {filename}: {e}")
+    print(f"[INFO] Generated {generated} voiceovers in {output_dir}")
 
 async def run_all():
     await download_videos(CLIPS_DIR, ROYALTY_FREE_CLIP_PLAYLISTS, 50, 15, 30)
@@ -169,5 +197,4 @@ async def run_all():
     await generate_dynamic_voiceovers(VOICE_DIR, 30)
 
 if __name__ == "__main__":
-    import json
     asyncio.run(run_all())
