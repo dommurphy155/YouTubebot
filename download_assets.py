@@ -41,7 +41,6 @@ async def run_yt_dlp_cmd(args: list[str]) -> str:
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
         err_str = stderr.decode().strip()
-        # Detect if error is due to login/captcha or bot detection to skip early
         if any(keyword in err_str.lower() for keyword in ["sign in", "captcha", "login", "cookie", "blocked", "forbidden", "error 429"]):
             raise RuntimeError(f"yt-dlp blocked by YouTube restrictions: {err_str}")
         raise RuntimeError(f"yt-dlp failed: {err_str}")
@@ -82,18 +81,12 @@ async def fetch_video_metadata(video_url: str) -> dict | None:
             ]
         )
         meta = json.loads(output)
-        # Heuristic check to reject videos likely to fail download:
-        # skip private, deleted, unavailable videos
         if meta.get("is_private") or meta.get("is_unavailable") or meta.get("age_limit", 0) > 18:
             return None
-        # Skip videos flagged for login requirement
         if meta.get("requested_formats") is None and meta.get("formats") is None:
-            # No downloadable formats found -> likely restricted
             return None
-        # Passed heuristics: accept video metadata
         return meta
-    except RuntimeError as e:
-        # This error might be from blocking or captcha, treat as unrecoverable
+    except RuntimeError:
         return None
     except Exception:
         return None
@@ -222,7 +215,6 @@ async def download_music(output_dir: Path, playlists: list[str], count: int) -> 
                 downloaded += 1
                 continue
             try:
-                # Fetch metadata and do a quick check for restrictions
                 meta = await fetch_video_metadata(track_url)
                 if meta is None:
                     print(f"[SKIP] Music track {track_url} metadata indicates it should be skipped (likely login/restriction).")
