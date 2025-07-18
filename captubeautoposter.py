@@ -22,7 +22,7 @@ CATEGORIES = [
     {"name": "trending2", "min_sec": 15, "max_sec": 30},
 ]
 
-POST_INTERVALS = [9 * 3600, 12 * 3600, 15 * 3600, 18 * 3600, 21 * 3600]
+POST_INTERVALS = [9 * 3600, 12 * 3600, 15 * 3600, 18 * 3600]
 
 STATE_FILE = "poster_state.json"
 TEMP_DIR = "/tmp"
@@ -79,14 +79,13 @@ def cleanup_temp_files(age_seconds=86400):
                 os.remove(f)
                 log(f"Deleted temp file: {f}")
         except Exception:
-            pass  # don't stop cleanup on error
+            pass
 
 def log(msg: str):
     ts = datetime.now(UK_TZ).strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts}] {msg}")
 
 async def with_retry(func, *args, retries=3, base_delay=1, **kwargs):
-    # Less retries, shorter delays to save CPU/wait
     for i in range(retries):
         try:
             return await func(*args, **kwargs)
@@ -97,7 +96,6 @@ async def with_retry(func, *args, retries=3, base_delay=1, **kwargs):
     raise RuntimeError(f"{func.__name__} failed after {retries} retries")
 
 def ai_optimize_script(name):
-    # Keep simple - no external calls or heavy AI logic
     return {"text": f"Check out this {name} clip!", "use_tts": random.choice([True, False])}
 
 async def generate_script(category):
@@ -148,7 +146,7 @@ async def capcut_create_video(page, script_data, category):
             await page.select_option("select#voice-select", "en-US-Natural")
 
         await click_fallback(page, ["button#generate-video"])
-        await asyncio.sleep(7000)  # Reduced wait, aggressive but practical
+        await asyncio.sleep(7000)
 
         await click_fallback(page, ["button:has-text('Export')"])
         async with page.expect_download() as info:
@@ -248,8 +246,8 @@ async def post_one_video(playwright, category, headless=True):
             "--disable-background-timer-throttling",
             "--disable-backgrounding-occluded-windows",
             "--disable-renderer-backgrounding",
+            "--disable-features=site-per-process",  # minor perf gain
         ],
-        # Reduce concurrency and memory use on your VPS
     )
     browser.add_init_script(STEALTH_JS)
 
@@ -332,7 +330,7 @@ async def start_scheduler(app):
     app.create_task(scheduler())
 
 def main():
-    required_vars = ["CAPCUT_EMAIL", "CAPCUT_PASSWORD", "YOUTUBE_EMAIL", "YOUTUBE_PASSWORD", "TELEGRAM_TOKEN"]
+    required_vars = ["CAPCUT_EMAIL", "CAPCUT_PASSWORD", "YOUTUBE_EMAIL", "YOUTUBE_PASSWORD", "TELEGRAM_TOKEN", "TELEGRAM_ADMIN_ID"]
     missing = [v for v in required_vars if not os.environ.get(v)]
     if missing:
         print(f"Missing environment variables: {', '.join(missing)}")
