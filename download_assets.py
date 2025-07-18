@@ -85,6 +85,12 @@ async def download_video(video_url: str, filename: Path) -> None:
             video_url,
             "--user-agent",
             USER_AGENT,
+            "--write-info-json",
+            "--write-sub",
+            "--write-auto-sub",
+            "--embed-subs",
+            "--embed-thumbnail",
+            "--write-thumbnail"
         ]
     )
 
@@ -138,21 +144,25 @@ async def download_videos(
             vid_url = f"https://www.youtube.com/watch?v={vid_id}"
             filename = output_dir / f"{vid_id}.mp4"
             if filename.exists():
+                print(f"[SKIP] Video already exists: {filename}")
                 downloaded += 1
                 continue
             try:
                 meta = await fetch_video_metadata(vid_url)
                 duration = meta.get("duration", 0)
                 if not (min_duration <= duration <= max_duration):
+                    print(f"[SKIP] Video {vid_url} duration {duration}s out of range ({min_duration}-{max_duration}s)")
                     continue
-            except Exception:
+            except Exception as e:
+                print(f"[WARN] Failed to fetch metadata for video {vid_url}: {e}")
                 continue
             try:
                 print(f"[INFO] Downloading video {vid_url} ({duration}s)...")
                 await download_video(vid_url, filename)
+                print(f"[SUCCESS] Downloaded video {vid_url}")
                 downloaded += 1
             except Exception as e:
-                print(f"[WARN] Failed to download video {vid_url}: {e}")
+                print(f"[FAIL] Failed to download video {vid_url}: {e}")
                 continue
     print(f"[INFO] Downloaded {downloaded} videos into {output_dir}")
 
@@ -179,14 +189,16 @@ async def download_music(output_dir: Path, playlists: list[str], count: int) -> 
             track_url = f"https://www.youtube.com/watch?v={track_id}"
             filename = output_dir / f"{track_id}.mp3"
             if filename.exists():
+                print(f"[SKIP] Music track already exists: {filename}")
                 downloaded += 1
                 continue
             try:
                 print(f"[INFO] Downloading music track {track_url}...")
                 await download_audio(track_url, filename)
+                print(f"[SUCCESS] Downloaded music track {track_url}")
                 downloaded += 1
             except Exception as e:
-                print(f"[WARN] Failed to download music track {track_url}: {e}")
+                print(f"[FAIL] Failed to download music track {track_url}: {e}")
                 continue
     print(f"[INFO] Downloaded {downloaded} music tracks into {output_dir}")
 
@@ -207,15 +219,16 @@ async def generate_dynamic_voiceovers(output_dir: Path, count: int) -> None:
     for i in range(count):
         filename = output_dir / f"voiceover_{i+1}.mp3"
         if filename.exists():
+            print(f"[SKIP] Voiceover already exists: {filename}")
             generated += 1
             continue
         quote = random.choice(quotes)
         try:
             await loop.run_in_executor(executor, generate_voiceover_file, quote, filename)
-            print(f"[INFO] Generated voiceover: {filename}")
+            print(f"[SUCCESS] Generated voiceover: {filename}")
             generated += 1
         except Exception as e:
-            print(f"[WARN] Failed to generate voiceover {filename}: {e}")
+            print(f"[FAIL] Failed to generate voiceover {filename}: {e}")
     print(f"[INFO] Generated {generated} voiceovers in {output_dir}")
 
 
