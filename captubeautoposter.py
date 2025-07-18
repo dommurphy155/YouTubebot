@@ -27,15 +27,19 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_ADMIN_ID = int(os.environ.get("TELEGRAM_ADMIN_ID", "0"))
 
 last_post_info = {"category": None, "timestamp": None}
+
+
 def save_state():
     with open(STATE_FILE, "w") as f:
         json.dump(last_post_info, f)
+
 
 def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
             last = json.load(f)
             last_post_info.update(last)
+
 
 def cleanup_temp_files(age_seconds=86400):
     cutoff = time.time() - age_seconds
@@ -46,29 +50,35 @@ def cleanup_temp_files(age_seconds=86400):
             except OSError:
                 pass
 
+
 def log(msg):
     ts = datetime.now(UK_TZ).strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts}] {msg}")
+
 
 async def with_retry(func, *args, retries=5, base_delay=2, **kwargs):
     for i in range(retries):
         try:
             return await func(*args, **kwargs)
         except Exception as e:
-            log(f"Retry {i+1}/{retries} for {func.__name__}: {e}")
+            log(f"Retry {i + 1}/{retries} for {func.__name__}: {e}")
             await asyncio.sleep(base_delay * (2 ** i))
     raise RuntimeError(f"{func.__name__} failed after {retries} retries")
+
 
 def ai_optimize_script(category_name):
     text = f"Tune-in for next trending {category_name} clip!"
     return {"text": text, "use_tts": random.choice([True, False])}
 
+
 async def generate_script(category):
     return ai_optimize_script(category["name"])
+
 
 async def solve_captcha(page):
     log("🔐 CAPTCHA solving placeholder called")
     return False
+
 
 async def click_fallback(page, selectors, **kwargs):
     for sel in selectors:
@@ -77,12 +87,14 @@ async def click_fallback(page, selectors, **kwargs):
             return await el.click(**kwargs)
     raise PlaywrightTimeout(f"No clickable element found in {selectors}")
 
+
 async def fill_fallback(page, selectors, text, **kwargs):
     for sel in selectors:
         el = await page.query_selector(sel)
         if el:
             return await el.fill(text, **kwargs)
     raise PlaywrightTimeout(f"No fillable element found in {selectors}")
+
 
 async def capcut_create_video(page, script_data, category):
     try:
@@ -128,6 +140,7 @@ async def capcut_create_video(page, script_data, category):
         log(traceback.format_exc())
         return None
 
+
 async def youtube_upload_video(page, video_path, category, title, description):
     try:
         await with_retry(page.goto, "https://www.youtube.com/upload", timeout=30000)
@@ -168,6 +181,7 @@ async def youtube_upload_video(page, video_path, category, title, description):
         log(traceback.format_exc())
         return False
 
+
 def generate_title_description(category, script_data):
     base = {
         "funny": "😂 Funny Clip",
@@ -178,6 +192,7 @@ def generate_title_description(category, script_data):
     }
     title = f"{base.get(category['name'], 'Short Video')} - {script_data['text'][:30].strip()}"
     return title, f"{title}\n\n#Shorts #AI"
+
 
 async def post_one_video(playwright, category):
     cleanup_temp_files()
@@ -203,6 +218,7 @@ async def post_one_video(playwright, category):
         await ctx.close()
         await browser.close()
 
+
 async def scheduler():
     load_state()
     while True:
@@ -221,11 +237,13 @@ async def scheduler():
         log(f"Next run at {nxt.isoformat()}")
         await asyncio.sleep(sleep)
 
+
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cat = last_post_info.get("category")
     ts = last_post_info.get("timestamp")
     text = "No videos posted yet." if not ts else f"Last: {cat} at {ts}"
     await update.message.reply_text(text)
+
 
 async def postnow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != TELEGRAM_ADMIN_ID:
@@ -237,6 +255,7 @@ async def postnow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ok = await post_one_video(pw, cat)
     await update.message.reply_text("✅ Success" if ok else "❌ Failed")
 
+
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != TELEGRAM_ADMIN_ID:
         return await update.message.reply_text("❌ Unauthorized")
@@ -246,8 +265,10 @@ async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             t.cancel()
     await context.application.stop()
 
+
 async def start_scheduler(app):
     app.create_task(scheduler())
+
 
 def main():
     needed = ["CAPCUT_EMAIL", "CAPCUT_PASSWORD", "YOUTUBE_EMAIL", "YOUTUBE_PASSWORD", "TELEGRAM_TOKEN"]
@@ -268,6 +289,7 @@ def main():
 
     log("Bot starting, scheduler engaged")
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
