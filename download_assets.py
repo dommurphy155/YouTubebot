@@ -2,7 +2,6 @@ import os
 import asyncio
 import subprocess
 import random
-import shutil
 from pathlib import Path
 import pyttsx3
 import json
@@ -17,8 +16,10 @@ CLIPS_DIR.mkdir(exist_ok=True)
 MUSIC_DIR.mkdir(exist_ok=True)
 VOICE_DIR.mkdir(exist_ok=True)
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " \
-             "(KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+)
 
 ROYALTY_FREE_CLIP_PLAYLISTS = [
     "https://www.youtube.com/playlist?list=PLrEnWoR732-BHrPp_Pm8_VleD68f9s14-",
@@ -28,8 +29,9 @@ ROYALTY_FREE_MUSIC_PLAYLISTS = [
     "https://www.youtube.com/playlist?list=PLMC9KNkIncKtPzgY-5rmhvj7fax8fdxoj",
 ]
 
+
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
-async def run_yt_dlp_cmd(args):
+async def run_yt_dlp_cmd(args: list[str]) -> str:
     proc = await asyncio.create_subprocess_exec(
         "yt-dlp",
         *args,
@@ -41,14 +43,17 @@ async def run_yt_dlp_cmd(args):
         raise RuntimeError(f"yt-dlp failed: {stderr.decode().strip()}")
     return stdout.decode()
 
-async def fetch_playlist_videos(playlist_url):
-    # Get flat playlist metadata JSON lines
-    output = await run_yt_dlp_cmd([
-        "--flat-playlist",
-        "-j",
-        playlist_url,
-        "--user-agent", USER_AGENT,
-    ])
+
+async def fetch_playlist_videos(playlist_url: str) -> list[dict]:
+    output = await run_yt_dlp_cmd(
+        [
+            "--flat-playlist",
+            "-j",
+            playlist_url,
+            "--user-agent",
+            USER_AGENT,
+        ]
+    )
     videos = []
     for line in output.splitlines():
         try:
@@ -57,40 +62,61 @@ async def fetch_playlist_videos(playlist_url):
             continue
     return videos
 
-async def fetch_video_metadata(video_url):
-    output = await run_yt_dlp_cmd([
-        "-j",
-        video_url,
-        "--user-agent", USER_AGENT,
-    ])
+
+async def fetch_video_metadata(video_url: str) -> dict:
+    output = await run_yt_dlp_cmd(
+        [
+            "-j",
+            video_url,
+            "--user-agent",
+            USER_AGENT,
+        ]
+    )
     return json.loads(output)
 
-async def download_video(video_url, filename):
-    await run_yt_dlp_cmd([
-        "-f", "mp4",
-        "-o", str(filename),
-        video_url,
-        "--user-agent", USER_AGENT,
-    ])
 
-async def download_audio(audio_url, filename):
-    await run_yt_dlp_cmd([
-        "-x", "--audio-format", "mp3",
-        "-o", str(filename),
-        audio_url,
-        "--user-agent", USER_AGENT,
-    ])
+async def download_video(video_url: str, filename: Path) -> None:
+    await run_yt_dlp_cmd(
+        [
+            "-f",
+            "mp4",
+            "-o",
+            str(filename),
+            video_url,
+            "--user-agent",
+            USER_AGENT,
+        ]
+    )
 
-def generate_voiceover_file(quote, filename):
+
+async def download_audio(audio_url: str, filename: Path) -> None:
+    await run_yt_dlp_cmd(
+        [
+            "-x",
+            "--audio-format",
+            "mp3",
+            "-o",
+            str(filename),
+            audio_url,
+            "--user-agent",
+            USER_AGENT,
+        ]
+    )
+
+
+def generate_voiceover_file(quote: str, filename: Path) -> None:
     engine = pyttsx3.init()
-    engine.setProperty('rate', 150)
-    voices = engine.getProperty('voices')
+    engine.setProperty("rate", 150)
+    voices = engine.getProperty("voices")
     if voices:
-        engine.setProperty('voice', voices[0].id)
+        engine.setProperty("voice", voices[0].id)
     engine.save_to_file(quote, str(filename))
     engine.runAndWait()
 
-async def download_videos(output_dir: Path, playlists: list[str], count: int, min_duration=15, max_duration=30):
+
+async def download_videos(
+    output_dir: Path, playlists: list[str], count: int, min_duration=15, max_duration=30
+) -> None:
     print(f"[INFO] Starting download of up to {count} videos into {output_dir}...")
     downloaded = 0
     for playlist_url in playlists:
@@ -130,7 +156,8 @@ async def download_videos(output_dir: Path, playlists: list[str], count: int, mi
                 continue
     print(f"[INFO] Downloaded {downloaded} videos into {output_dir}")
 
-async def download_music(output_dir: Path, playlists: list[str], count: int):
+
+async def download_music(output_dir: Path, playlists: list[str], count: int) -> None:
     print(f"[INFO] Starting download of up to {count} music tracks into {output_dir}...")
     downloaded = 0
     for playlist_url in playlists:
@@ -163,7 +190,8 @@ async def download_music(output_dir: Path, playlists: list[str], count: int):
                 continue
     print(f"[INFO] Downloaded {downloaded} music tracks into {output_dir}")
 
-async def generate_dynamic_voiceovers(output_dir: Path, count: int):
+
+async def generate_dynamic_voiceovers(output_dir: Path, count: int) -> None:
     print(f"[INFO] Generating {count} dynamic voiceovers into {output_dir}...")
     quotes = [
         "Believe you can and you're halfway there.",
@@ -172,7 +200,6 @@ async def generate_dynamic_voiceovers(output_dir: Path, count: int):
         "Dream big and dare to fail.",
         "Keep going, you're getting there.",
     ]
-    # Using thread pool to avoid blocking event loop
     loop = asyncio.get_running_loop()
     executor = ThreadPoolExecutor(max_workers=2)
 
@@ -191,10 +218,12 @@ async def generate_dynamic_voiceovers(output_dir: Path, count: int):
             print(f"[WARN] Failed to generate voiceover {filename}: {e}")
     print(f"[INFO] Generated {generated} voiceovers in {output_dir}")
 
-async def run_all():
+
+async def run_all() -> None:
     await download_videos(CLIPS_DIR, ROYALTY_FREE_CLIP_PLAYLISTS, 50, 15, 30)
     await download_music(MUSIC_DIR, ROYALTY_FREE_MUSIC_PLAYLISTS, 30)
     await generate_dynamic_voiceovers(VOICE_DIR, 30)
+
 
 if __name__ == "__main__":
     asyncio.run(run_all())
