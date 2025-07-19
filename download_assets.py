@@ -5,8 +5,19 @@ import random
 from pathlib import Path
 import pyttsx3
 import json
-from tenacity import retry, stop_after_attempt, wait_fixed
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from concurrent.futures import ThreadPoolExecutor
+import logging
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(levelname)s] %(asctime)s %(message)s",
+    handlers=[
+        logging.FileHandler("download_assets.log"),
+        logging.StreamHandler()
+    ],
+)
 
 CLIPS_DIR = Path("clips")
 MUSIC_DIR = Path("music")
@@ -21,15 +32,6 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
 )
 
-# Updated Google login URL (for downstream use)
-YOUTUBE_LOGIN_URL = (
-    "https://accounts.google.com/v3/signin/accountchooser?"
-    "continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Faction_handle_signin%3Dtrue"
-    "%26app%3Ddesktop%26hl%3Den-GB%26next%3Dhttps%253A%252F%252Fwww.youtube.com%252F"
-    "&service=youtube&flowName=GlifWebSignIn&flowEntry=ServiceLogin"
-    "&dsh=S252632798%3A1752884714945585"
-)
-
 ROYALTY_FREE_CLIP_PLAYLISTS = [
     "https://www.youtube.com/playlist?list=PLrEnWoR732-BHrPp_Pm8_VleD68f9s14-",
 ]
@@ -38,43 +40,70 @@ ROYALTY_FREE_MUSIC_PLAYLISTS = [
     "https://www.youtube.com/playlist?list=PLMC9KNkIncKtPzgY-5rmhvj7fax8fdxoj",
 ]
 
+# Custom exception to retry on
+class YtDlpTransientError(Exception):
+    pass
 
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=2, min=2, max=30),
+    retry=retry_if_exception_type(YtDlpTransientError),
+    reraise=True,
+)
 async def run_yt_dlp_cmd(args: list[str]) -> str:
+    """Run yt-dlp with retry on transient errors, timeout after 2 minutes."""
     proc = await asyncio.create_subprocess_exec(
         "yt-dlp",
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        logging.warning(f"yt-dlp command timed out: {' '.join(args)}")
+        raise YtDlpTransientError("Timeout during yt-dlp execution")
+
     if proc.returncode != 0:
         err_str = stderr.decode().strip()
-        if any(keyword in err_str.lower() for keyword in ["sign in", "captcha", "login", "cookie", "blocked", "forbidden", "error 429"]):
-            raise RuntimeError(f"yt-dlp blocked by YouTube restrictions: {err_str}")
+        logging.warning(f"yt-dlp error ({proc.returncode}): {err_str}")
+        # Retry on transient errors, fail otherwise
+        transient_keywords = [
+            "sign in", "captcha", "login", "cookie", "blocked",
+            "forbidden", "error 429", "temporarily unavailable",
+            "network error", "timed out", "connection reset"
+        ]
+        if any(keyword in err_str.lower() for keyword in transient_keywords):
+            raise YtDlpTransientError(err_str)
         raise RuntimeError(f"yt-dlp failed: {err_str}")
     return stdout.decode()
 
 
 async def fetch_playlist_videos(playlist_url: str) -> list[dict]:
-    output = await run_yt_dlp_cmd(
-        [
-            "--flat-playlist",
-            "-j",
-            playlist_url,
-            "--user-agent",
-            USER_AGENT,
-            "--no-check-certificate",
-            "--skip-download",
-        ]
-    )
-    videos = []
-    for line in output.splitlines():
-        try:
-            videos.append(json.loads(line))
-        except Exception:
-            continue
-    return videos
+    try:
+        output = await run_yt_dlp_cmd(
+            [
+                "--flat-playlist",
+                "-j",
+                playlist_url,
+                "--user-agent",
+                USER_AGENT,
+                "--no-check-certificate",
+                "--skip-download",
+            ]
+        )
+        videos = []
+        for line in output.splitlines():
+            try:
+                videos.append(json.loads(line))
+            except Exception:
+                continue
+        return videos
+    except Exception as e:
+        logging.error(f"Failed to fetch playlist {playlist_url}: {e}")
+        return []
 
 
 async def fetch_video_metadata(video_url: str) -> dict | None:
@@ -95,47 +124,48 @@ async def fetch_video_metadata(video_url: str) -> dict | None:
         if meta.get("requested_formats") is None and meta.get("formats") is None:
             return None
         return meta
-    except RuntimeError:
-        return None
-    except Exception:
+    except YtDlpTransientError:
+        raise
+    except Exception as e:
+        logging.warning(f"Failed to fetch metadata for {video_url}: {e}")
         return None
 
 
 async def download_video(video_url: str, filename: Path) -> None:
-    await run_yt_dlp_cmd(
-        [
-            "-f",
-            "mp4",
-            "-o",
-            str(filename),
-            video_url,
-            "--user-agent",
-            USER_AGENT,
-            "--no-check-certificate",
-            "--write-info-json",
-            "--write-sub",
-            "--write-auto-sub",
-            "--embed-subs",
-            "--embed-thumbnail",
-            "--write-thumbnail",
-        ]
-    )
+    args = [
+        "-f",
+        "mp4",
+        "-o",
+        str(filename),
+        video_url,
+        "--user-agent",
+        USER_AGENT,
+        "--no-check-certificate",
+        "--write-info-json",
+        "--write-sub",
+        "--write-auto-sub",
+        "--embed-subs",
+        "--embed-thumbnail",
+        "--write-thumbnail",
+        "--continue",  # resume partial downloads
+    ]
+    await run_yt_dlp_cmd(args)
 
 
 async def download_audio(audio_url: str, filename: Path) -> None:
-    await run_yt_dlp_cmd(
-        [
-            "-x",
-            "--audio-format",
-            "mp3",
-            "-o",
-            str(filename),
-            audio_url,
-            "--user-agent",
-            USER_AGENT,
-            "--no-check-certificate",
-        ]
-    )
+    args = [
+        "-x",
+        "--audio-format",
+        "mp3",
+        "-o",
+        str(filename),
+        audio_url,
+        "--user-agent",
+        USER_AGENT,
+        "--no-check-certificate",
+        "--continue",  # resume partial downloads
+    ]
+    await run_yt_dlp_cmd(args)
 
 
 def generate_voiceover_file(quote: str, filename: Path) -> None:
@@ -149,19 +179,17 @@ def generate_voiceover_file(quote: str, filename: Path) -> None:
 
 
 async def download_videos(
-    output_dir: Path, playlists: list[str], count: int, min_duration=15, max_duration=30
+    output_dir: Path, playlists: list[str], count: int, min_duration=1, max_duration=60
 ) -> None:
-    print(f"[INFO] Starting download of up to {count} videos into {output_dir}...")
+    logging.info(f"Starting download of up to {count} shorts into {output_dir}...")
     downloaded = 0
+    failed = []
+
     for playlist_url in playlists:
         if downloaded >= count:
             break
-        try:
-            videos_info = await fetch_playlist_videos(playlist_url)
-            random.shuffle(videos_info)
-        except Exception as e:
-            print(f"[WARN] Failed to fetch playlist {playlist_url}: {e}")
-            continue
+        videos_info = await fetch_playlist_videos(playlist_url)
+        random.shuffle(videos_info)
 
         for video in videos_info:
             if downloaded >= count:
@@ -169,47 +197,55 @@ async def download_videos(
             vid_id = video.get("id")
             if not vid_id:
                 continue
-            vid_url = f"https://www.youtube.com/watch?v={vid_id}"
+            vid_url = f"https://www.youtube.com/shorts/{vid_id}"
             filename = output_dir / f"{vid_id}.mp4"
             if filename.exists():
-                print(f"[SKIP] Video already exists: {filename}")
+                logging.info(f"[SKIP] Video already exists: {filename}")
                 downloaded += 1
                 continue
             try:
                 meta = await fetch_video_metadata(vid_url)
                 if meta is None:
-                    print(f"[SKIP] Video {vid_url} metadata indicates it should be skipped (likely login/restriction).")
+                    logging.info(f"[SKIP] Video {vid_url} metadata indicates it should be skipped.")
                     continue
                 duration = meta.get("duration", 0)
                 if not (min_duration <= duration <= max_duration):
-                    print(f"[SKIP] Video {vid_url} duration {duration}s out of range ({min_duration}-{max_duration}s)")
+                    logging.info(f"[SKIP] Video {vid_url} duration {duration}s out of range.")
                     continue
-            except Exception as e:
-                print(f"[WARN] Failed to fetch metadata for video {vid_url}: {e}")
-                continue
-            try:
-                print(f"[INFO] Downloading video {vid_url} ({duration}s)...")
+                logging.info(f"Downloading video {vid_url} ({duration}s)...")
                 await download_video(vid_url, filename)
-                print(f"[SUCCESS] Downloaded video {vid_url}")
+                logging.info(f"[SUCCESS] Downloaded video {vid_url}")
                 downloaded += 1
+            except YtDlpTransientError as e:
+                logging.warning(f"[RETRY LATER] Transient error downloading {vid_url}: {e}")
+                failed.append((vid_url, filename))
             except Exception as e:
-                print(f"[FAIL] Failed to download video {vid_url}: {e}")
-                continue
-    print(f"[INFO] Downloaded {downloaded} videos into {output_dir}")
+                logging.error(f"[FAIL] Failed to download video {vid_url}: {e}")
+
+    # Retry failed downloads with backoff
+    for vid_url, filename in failed:
+        logging.info(f"Retrying failed video download {vid_url} after delay...")
+        await asyncio.sleep(10)
+        try:
+            await download_video(vid_url, filename)
+            logging.info(f"[SUCCESS] Retried download succeeded: {vid_url}")
+            downloaded += 1
+        except Exception as e:
+            logging.error(f"[FAIL] Retried download failed: {vid_url}: {e}")
+
+    logging.info(f"Downloaded {downloaded} shorts into {output_dir}")
 
 
 async def download_music(output_dir: Path, playlists: list[str], count: int) -> None:
-    print(f"[INFO] Starting download of up to {count} music tracks into {output_dir}...")
+    logging.info(f"Starting download of up to {count} music tracks into {output_dir}...")
     downloaded = 0
+    failed = []
+
     for playlist_url in playlists:
         if downloaded >= count:
             break
-        try:
-            tracks_info = await fetch_playlist_videos(playlist_url)
-            random.shuffle(tracks_info)
-        except Exception as e:
-            print(f"[WARN] Failed to fetch music playlist {playlist_url}: {e}")
-            continue
+        tracks_info = await fetch_playlist_videos(playlist_url)
+        random.shuffle(tracks_info)
 
         for track in tracks_info:
             if downloaded >= count:
@@ -220,26 +256,39 @@ async def download_music(output_dir: Path, playlists: list[str], count: int) -> 
             track_url = f"https://www.youtube.com/watch?v={track_id}"
             filename = output_dir / f"{track_id}.mp3"
             if filename.exists():
-                print(f"[SKIP] Music track already exists: {filename}")
+                logging.info(f"[SKIP] Music track already exists: {filename}")
                 downloaded += 1
                 continue
             try:
                 meta = await fetch_video_metadata(track_url)
                 if meta is None:
-                    print(f"[SKIP] Music track {track_url} metadata indicates it should be skipped (likely login/restriction).")
+                    logging.info(f"[SKIP] Music track {track_url} metadata indicates skip.")
                     continue
-                print(f"[INFO] Downloading music track {track_url}...")
+                logging.info(f"Downloading music track {track_url}...")
                 await download_audio(track_url, filename)
-                print(f"[SUCCESS] Downloaded music track {track_url}")
+                logging.info(f"[SUCCESS] Downloaded music track {track_url}")
                 downloaded += 1
+            except YtDlpTransientError as e:
+                logging.warning(f"[RETRY LATER] Transient error downloading music {track_url}: {e}")
+                failed.append((track_url, filename))
             except Exception as e:
-                print(f"[FAIL] Failed to download music track {track_url}: {e}")
-                continue
-    print(f"[INFO] Downloaded {downloaded} music tracks into {output_dir}")
+                logging.error(f"[FAIL] Failed to download music track {track_url}: {e}")
+
+    for track_url, filename in failed:
+        logging.info(f"Retrying failed music download {track_url} after delay...")
+        await asyncio.sleep(10)
+        try:
+            await download_audio(track_url, filename)
+            logging.info(f"[SUCCESS] Retried music download succeeded: {track_url}")
+            downloaded += 1
+        except Exception as e:
+            logging.error(f"[FAIL] Retried music download failed: {track_url}: {e}")
+
+    logging.info(f"Downloaded {downloaded} music tracks into {output_dir}")
 
 
 async def generate_dynamic_voiceovers(output_dir: Path, count: int) -> None:
-    print(f"[INFO] Generating {count} dynamic voiceovers into {output_dir}...")
+    logging.info(f"Generating {count} dynamic voiceovers into {output_dir}...")
     quotes = [
         "Believe you can and you're halfway there.",
         "Stay positive, work hard, make it happen.",
@@ -254,21 +303,21 @@ async def generate_dynamic_voiceovers(output_dir: Path, count: int) -> None:
     for i in range(count):
         filename = output_dir / f"voiceover_{i+1}.mp3"
         if filename.exists():
-            print(f"[SKIP] Voiceover already exists: {filename}")
+            logging.info(f"[SKIP] Voiceover already exists: {filename}")
             generated += 1
             continue
         quote = random.choice(quotes)
         try:
             await loop.run_in_executor(executor, generate_voiceover_file, quote, filename)
-            print(f"[SUCCESS] Generated voiceover: {filename}")
+            logging.info(f"[SUCCESS] Generated voiceover: {filename}")
             generated += 1
         except Exception as e:
-            print(f"[FAIL] Failed to generate voiceover {filename}: {e}")
-    print(f"[INFO] Generated {generated} voiceovers in {output_dir}")
+            logging.error(f"[FAIL] Failed to generate voiceover {filename}: {e}")
+    logging.info(f"Generated {generated} voiceovers in {output_dir}")
 
 
 async def run_all() -> None:
-    await download_videos(CLIPS_DIR, ROYALTY_FREE_CLIP_PLAYLISTS, 50, 15, 30)
+    await download_videos(CLIPS_DIR, ROYALTY_FREE_CLIP_PLAYLISTS, 50, 1, 60)
     await download_music(MUSIC_DIR, ROYALTY_FREE_MUSIC_PLAYLISTS, 30)
     await generate_dynamic_voiceovers(VOICE_DIR, 30)
 
