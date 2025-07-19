@@ -65,6 +65,15 @@ USER_AGENT = (
 
 VIEWPORT = {"width": 1366, "height": 768}
 
+# Updated login URL
+YOUTUBE_LOGIN_URL = (
+    "https://accounts.google.com/v3/signin/accountchooser?"
+    "continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Faction_handle_signin%3Dtrue"
+    "%26app%3Ddesktop%26hl%3Den-GB%26next%3Dhttps%253A%252F%252Fwww.youtube.com%252F"
+    "&service=youtube&flowName=GlifWebSignIn&flowEntry=ServiceLogin"
+    "&dsh=S252632798%3A1752884714945585"
+)
+
 def log(msg: str):
     ts = datetime.now(UK_TZ).strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts}] {msg}")
@@ -231,6 +240,7 @@ def compose_final_video(clip_path, tts_audio_path, bg_music_path, category):
         final_video = video_with_text.set_audio(video_clip.audio)
 
     output_path = os.path.join(TEMP_DIR, f"video_{category['name']}_{int(time.time())}.mp4")
+    final_video
     final_video.write_videofile(
         output_path,
         codec="libx264",
@@ -316,8 +326,6 @@ async def youtube_upload_video(page, video_path, category, title, description):
     try:
         log(f"Uploading video for category: {category['name']}")
         await with_retry(page.goto, "https://www.youtube.com/upload", timeout=30000)
-
-        # Skip login steps because we rely on persistent context logged in session
 
         input_file = await page.query_selector("input[type=file]")
         if not input_file:
