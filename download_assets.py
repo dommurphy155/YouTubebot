@@ -39,6 +39,8 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
 )
 
+COOKIES_PATH = "/home/ubuntu/youtube_cookies.txt"
+
 ROYALTY_FREE_CLIP_PLAYLISTS = [
     "https://www.youtube.com/playlist?list=PLrEnWoR732-BHrPp_Pm8_VleD68f9s14-",
 ]
@@ -93,7 +95,6 @@ def check_disk_space(path: Path) -> bool:
 
 
 def cleanup_partial_file(filepath: Path):
-    # Remove if file exists but is <100KB (likely partial/corrupt)
     if filepath.exists() and filepath.stat().st_size < 100 * 1024:
         try:
             filepath.unlink()
@@ -106,7 +107,6 @@ def verify_media_file(filepath: Path) -> bool:
     if not filepath.exists():
         return False
     try:
-        # Use ffprobe to check media file integrity; must be installed on system
         cmd = [
             "ffprobe",
             "-v",
@@ -129,7 +129,6 @@ def verify_media_file(filepath: Path) -> bool:
         return False
 
 
-# Custom exception to retry on
 class YtDlpTransientError(Exception):
     pass
 
@@ -180,6 +179,8 @@ async def fetch_playlist_videos(playlist_url: str) -> list[dict]:
                 playlist_url,
                 "--user-agent",
                 USER_AGENT,
+                "--cookies",
+                COOKIES_PATH,
                 "--no-check-certificate",
                 "--skip-download",
             ]
@@ -204,6 +205,8 @@ async def fetch_video_metadata(video_url: str) -> dict | None:
                 video_url,
                 "--user-agent",
                 USER_AGENT,
+                "--cookies",
+                COOKIES_PATH,
                 "--no-check-certificate",
                 "--skip-download",
             ]
@@ -232,6 +235,8 @@ async def download_video(video_url: str, filename: Path) -> None:
             video_url,
             "--user-agent",
             USER_AGENT,
+            "--cookies",
+            COOKIES_PATH,
             "--no-check-certificate",
             "--write-info-json",
             "--write-sub",
@@ -261,6 +266,8 @@ async def download_audio(audio_url: str, filename: Path) -> None:
             audio_url,
             "--user-agent",
             USER_AGENT,
+            "--cookies",
+            COOKIES_PATH,
             "--no-check-certificate",
             "--continue",
         ]
@@ -471,7 +478,6 @@ async def run_all() -> None:
 
 
 if __name__ == "__main__":
-    # Register graceful shutdown signals
     signal.signal(signal.SIGINT, shutdown_handler)
     signal.signal(signal.SIGTERM, shutdown_handler)
 
@@ -480,7 +486,5 @@ if __name__ == "__main__":
     except Exception as e:
         logging.error(f"Fatal error during run_all: {e}")
     finally:
-        # Save state one last time on exit
         save_state(load_state())
         logging.info("Exiting download_assets.py")
-    
