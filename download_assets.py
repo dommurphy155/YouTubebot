@@ -64,6 +64,16 @@ shutdown_requested = False
 download_semaphore = asyncio.Semaphore(CONCURRENT_DOWNLOADS)
 
 
+def verify_cookies_file() -> None:
+    if not Path(COOKIES_PATH).exists():
+        logging.error(f"Cookie file not found: {COOKIES_PATH}")
+        sys.exit(1)
+    if not os.access(COOKIES_PATH, os.R_OK):
+        logging.error(f"Cookie file not readable: {COOKIES_PATH}")
+        sys.exit(1)
+    logging.info(f"Using cookie file: {COOKIES_PATH}")
+
+
 def save_state(state: dict):
     try:
         with open(STATE_FILE, "w") as f:
@@ -133,6 +143,15 @@ class YtDlpTransientError(Exception):
     pass
 
 
+def build_yt_dlp_args(extra_args: list[str]) -> list[str]:
+    base_args = [
+        "--user-agent", USER_AGENT,
+        "--cookies", COOKIES_PATH,
+        "--no-check-certificate",
+    ]
+    return base_args + extra_args
+
+
 @retry(
     stop=stop_after_attempt(5),
     wait=wait_exponential(multiplier=2, min=2, max=30),
@@ -172,19 +191,12 @@ async def run_yt_dlp_cmd(args: list[str]) -> str:
 
 async def fetch_playlist_videos(playlist_url: str) -> list[dict]:
     try:
-        output = await run_yt_dlp_cmd(
-            [
-                "--flat-playlist",
-                "-j",
-                playlist_url,
-                "--user-agent",
-                USER_AGENT,
-                "--cookies",
-                COOKIES_PATH,
-                "--no-check-certificate",
-                "--skip-download",
-            ]
-        )
+        output = await run_yt_dlp_cmd(build_yt_dlp_args([
+            "--flat-playlist",
+            "-j",
+            playlist_url,
+            "--skip-download",
+        ]))
         videos = []
         for line in output.splitlines():
             try:
@@ -199,18 +211,11 @@ async def fetch_playlist_videos(playlist_url: str) -> list[dict]:
 
 async def fetch_video_metadata(video_url: str) -> dict | None:
     try:
-        output = await run_yt_dlp_cmd(
-            [
-                "-j",
-                video_url,
-                "--user-agent",
-                USER_AGENT,
-                "--cookies",
-                COOKIES_PATH,
-                "--no-check-certificate",
-                "--skip-download",
-            ]
-        )
+        output = await run_yt_dlp_cmd(build_yt_dlp_args([
+            "-j",
+            video_url,
+            "--skip-download",
+        ]))
         meta = json.loads(output)
         if meta.get("is_private") or meta.get("is_unavailable") or meta.get("age_limit", 0) > 18:
             return None
@@ -227,17 +232,12 @@ async def fetch_video_metadata(video_url: str) -> dict | None:
 async def download_video(video_url: str, filename: Path) -> None:
     async with download_semaphore:
         cleanup_partial_file(filename)
-        args = [
+        args = build_yt_dlp_args([
             "-f",
             "mp4",
             "-o",
             str(filename),
             video_url,
-            "--user-agent",
-            USER_AGENT,
-            "--cookies",
-            COOKIES_PATH,
-            "--no-check-certificate",
             "--write-info-json",
             "--write-sub",
             "--write-auto-sub",
@@ -245,7 +245,7 @@ async def download_video(video_url: str, filename: Path) -> None:
             "--embed-thumbnail",
             "--write-thumbnail",
             "--continue",
-        ]
+        ])
         await run_yt_dlp_cmd(args)
 
         if not verify_media_file(filename):
@@ -257,20 +257,15 @@ async def download_video(video_url: str, filename: Path) -> None:
 async def download_audio(audio_url: str, filename: Path) -> None:
     async with download_semaphore:
         cleanup_partial_file(filename)
-        args = [
+        args = build_yt_dlp_args([
             "-x",
             "--audio-format",
             "mp3",
             "-o",
             str(filename),
             audio_url,
-            "--user-agent",
-            USER_AGENT,
-            "--cookies",
-            COOKIES_PATH,
-            "--no-check-certificate",
             "--continue",
-        ]
+        ])
         await run_yt_dlp_cmd(args)
 
         if not verify_media_file(filename):
@@ -478,6 +473,7 @@ async def run_all() -> None:
 
 
 if __name__ == "__main__":
+    verify_cookies_file()
     signal.signal(signal.SIGINT, shutdown_handler)
     signal.signal(signal.SIGTERM, shutdown_handler)
 
@@ -488,3 +484,4 @@ if __name__ == "__main__":
     finally:
         save_state(load_state())
         logging.info("Exiting download_assets.py")
+    
