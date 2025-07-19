@@ -21,6 +21,15 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
 )
 
+# Updated Google login URL (for downstream use)
+YOUTUBE_LOGIN_URL = (
+    "https://accounts.google.com/v3/signin/accountchooser?"
+    "continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Faction_handle_signin%3Dtrue"
+    "%26app%3Ddesktop%26hl%3Den-GB%26next%3Dhttps%253A%252F%252Fwww.youtube.com%252F"
+    "&service=youtube&flowName=GlifWebSignIn&flowEntry=ServiceLogin"
+    "&dsh=S252632798%3A1752884714945585"
+)
+
 ROYALTY_FREE_CLIP_PLAYLISTS = [
     "https://www.youtube.com/playlist?list=PLrEnWoR732-BHrPp_Pm8_VleD68f9s14-",
 ]
