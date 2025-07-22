@@ -1,0 +1,7 @@
+yt-dlp
+ffmpeg-python
+python-telegram-bot==20.4
+apscheduler
+fastapi
+uvicorn
+psutil
