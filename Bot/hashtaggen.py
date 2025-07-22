@@ -1,6 +1,6 @@
 import re
 
-def generate_hashtags(title: str):
+def generate_hashtags(title: str) -> str:
     words = re.findall(r"[A-Za-z]{4,}", title)
     seen = set()
     tags = []
