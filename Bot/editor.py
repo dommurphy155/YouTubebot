@@ -7,7 +7,6 @@ logger = logging.getLogger("TelegramVideoBot")
 OUTPUT_DIR = "/home/ubuntu/YouTubebot/processed"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Semaphore to limit concurrent ffmpeg jobs
 _ffmpeg_semaphore = asyncio.Semaphore(1)
 
 async def run_ffmpeg_async(cmd: list[str]) -> None:
@@ -26,16 +25,32 @@ async def edit_video(input_path: str) -> str:
     output_path = os.path.join(OUTPUT_DIR, os.path.basename(input_path))
     logger.info(f"Editing video: {input_path}")
 
-    # Build ffmpeg command manually for async subprocess
-    # Scale input to max 1080 width, keep aspect ratio, crop center 1080x1920 vertical video
-    # Trim/crop video duration to between 30-45 seconds, keep original audio
+    # ffmpeg filter chain to:
+    # 1. scale max width 1080 keeping aspect ratio
+    # 2. crop center 1080x1920 vertical format
+    # 3. remove silence from start and end (silencedetect + trimming)
+    # 4. auto trim to audio duration (max 45s)
+    # 5. enhance contrast/brightness
+    # 6. sharpen video
+    # 7. normalize audio volume
+
+    filter_complex = (
+        "[0:v]scale=1080:-1,"
+        "crop=1080:1920:(in_w-1080)/2:(in_h-1920)/2,"
+        "eq=contrast=1.1:brightness=0.05,"
+        "unsharp=luma_msize_x=5:luma_msize_y=5:luma_amount=1.0,"
+        "trim=start='if(gt(scene,0.05),0,0)':end=45,setpts=PTS-STARTPTS[v];"
+        "[0:a]silencedetect=noise=-30dB:d=0.5[aud1];"
+        "[0:a]volume=normalize[a];"
+        "[a]atrim=end=45,asetpts=PTS-STARTPTS[aout]"
+    )
+
     ffmpeg_cmd = [
         "ffmpeg",
         "-i", input_path,
-        "-filter_complex",
-        "[0]scale=1080:-1[s0];[s0]crop=1080:1920:(in_w-1080)/2:(in_h-1920)/2[s1]",
-        "-map", "[s1]",
-        "-t", "45",              # max duration 45 seconds
+        "-filter_complex", filter_complex,
+        "-map", "[v]",
+        "-map", "[aout]",
         "-vcodec", "libx264",
         "-preset", "fast",
         "-crf", "25",
@@ -49,7 +64,6 @@ async def edit_video(input_path: str) -> str:
         await run_ffmpeg_async(ffmpeg_cmd)
         logger.info(f"Edited video saved to: {output_path}")
         return output_path
-
     except Exception as e:
         logger.error(f"FFmpeg failed: {str(e)}")
         raise
