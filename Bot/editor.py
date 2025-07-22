@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import os
-import tempfile
 import ffmpeg
 
 logger = logging.getLogger("TelegramVideoBot")
@@ -15,12 +14,12 @@ async def edit_video(input_path: str) -> str:
     try:
         logger.info(f"Editing video: {input_path}")
 
-        # Resize, crop center square, convert to vertical for iPhone (9:16), compress
+        # Resize width to 1080, maintain aspect ratio, then crop center to 1080x1920 (vertical)
         (
             ffmpeg
             .input(input_path)
             .filter("scale", 1080, -1)
-            .filter("crop", 1080, 1920)
+            .filter("crop", 1080, 1920, "(in_w-1080)/2", "(in_h-1920)/2")
             .output(output_path, vcodec='libx264', crf=23, preset='medium', acodec='aac', movflags='faststart')
             .overwrite_output()
             .run(capture_stdout=True, capture_stderr=True)
