@@ -20,7 +20,7 @@ async def upload_video(video_path: str):
                 await bot.send_document(
                     chat_id=TELEGRAM_CHAT_ID,
                     document=input_file,
-                    caption="🎬 New video",
+                    caption="🎬 New video\n#viral #funny #trending #shorts #mustwatch",
                     disable_notification=True,
                     parse_mode="HTML"
                 )
