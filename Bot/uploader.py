@@ -8,7 +8,8 @@ logger = logging.getLogger("TelegramVideoBot")
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
 
-bot = Bot(token=TELEGRAM_TOKEN, parse_mode="HTML")
+from aiogram.types import DefaultBotProperties
+bot = Bot(token=TELEGRAM_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 
 async def upload_video(video_path: str):
     try:
