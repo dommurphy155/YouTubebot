@@ -2,6 +2,7 @@ import logging
 import os
 import asyncio
 from aiogram import Bot
+from aiogram.types import InputFile
 
 logger = logging.getLogger("TelegramVideoBot")
 
@@ -14,9 +15,10 @@ async def upload_video(video_path: str):
     try:
         logger.info(f"Uploading video: {video_path}")
         async with bot:
+            input_file = InputFile(video_path)
             await bot.send_document(
                 chat_id=TELEGRAM_CHAT_ID,
-                document=open(video_path, "rb"),
+                document=input_file,
                 caption="🎬 New video",
                 disable_notification=True,
                 parse_mode="HTML"
