@@ -16,32 +16,41 @@ HEADERS = {
     "Authorization": PEXELS_API_KEY,
 }
 
-PEXELS_API_URL = "https://api.pexels.com/videos/popular?per_page=10&page=1"
+PEXELS_API_URL = "https://api.pexels.com/videos/popular?per_page=5&page=1"  # reduced per_page for faster response
 
 async def fetch_pexels_videos():
-    async with aiohttp.ClientSession(headers=HEADERS) as session:
-        async with session.get(PEXELS_API_URL) as resp:
-            if resp.status != 200:
-                logger.error(f"Pexels API error: {resp.status}")
-                return []
-            data = await resp.json()
-            return data.get("videos", [])
+    timeout = aiohttp.ClientTimeout(total=10)  # limit total request time
+    async with aiohttp.ClientSession(headers=HEADERS, timeout=timeout) as session:
+        try:
+            async with session.get(PEXELS_API_URL) as resp:
+                if resp.status != 200:
+                    logger.error(f"Pexels API error: {resp.status}")
+                    return []
+                data = await resp.json()
+                return data.get("videos", [])
+        except asyncio.TimeoutError:
+            logger.error("Pexels API request timed out")
+            return []
+        except Exception as e:
+            logger.error(f"Pexels API request failed: {e}")
+            return []
 
 async def download_video(url: str, filename: str) -> str | None:
+    path = os.path.join(DOWNLOAD_DIR, filename)
     try:
-        async with aiohttp.ClientSession() as session:
+        timeout = aiohttp.ClientTimeout(total=60)  # 1 min max download time
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url) as resp:
                 if resp.status != 200:
                     logger.error(f"Failed to download video: {resp.status}")
                     return None
-                path = os.path.join(DOWNLOAD_DIR, filename)
                 with open(path, "wb") as f:
-                    while True:
-                        chunk = await resp.content.read(1024)
-                        if not chunk:
-                            break
+                    async for chunk in resp.content.iter_chunked(8192):  # bigger chunks, async iteration
                         f.write(chunk)
-                return path
+        return path
+    except asyncio.TimeoutError:
+        logger.error("Video download timed out")
+        return None
     except Exception as e:
         logger.error(f"Download exception: {e}")
         return None
@@ -63,7 +72,11 @@ async def scrape_video() -> str | None:
         logger.warning("No mp4 files found for first Pexels video")
         return None
 
-    best_file = max(mp4_files, key=lambda x: x.get("width", 0))
+    # Select best file balancing resolution and size
+    def score(f):  # prioritize resolution but penalize large files for efficiency
+        return f.get("width", 0) / (f.get("file_size", 1) / 1024 / 1024 + 1)
+    best_file = max(mp4_files, key=score)
+
     video_url = best_file.get("link")
     video_id = video.get("id")
 
@@ -85,7 +98,8 @@ async def scrape_video() -> str | None:
 def cleanup_files(paths: list[str]):
     for path in paths:
         try:
-            os.remove(path)
-            logger.info(f"Deleted file: {path}")
+            if os.path.exists(path):
+                os.remove(path)
+                logger.info(f"Deleted file: {path}")
         except Exception as e:
             logger.error(f"Error deleting {path}: {e}")
