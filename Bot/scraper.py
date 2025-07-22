@@ -45,7 +45,7 @@ async def download_video(url: str, filename: str) -> str | None:
                     logger.error(f"Failed to download video: {resp.status}")
                     return None
                 with open(path, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(8192):  # bigger chunks, async iteration
+                    async for chunk in resp.content.iter_chunked(8192):
                         f.write(chunk)
         return path
     except asyncio.TimeoutError:
@@ -73,7 +73,7 @@ async def scrape_video() -> str | None:
         return None
 
     # Select best file balancing resolution and size
-    def score(f):  # prioritize resolution but penalize large files for efficiency
+    def score(f):
         return f.get("width", 0) / (f.get("file_size", 1) / 1024 / 1024 + 1)
     best_file = max(mp4_files, key=score)
 
