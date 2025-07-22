@@ -26,10 +26,8 @@ def handle_shutdown(signum, frame):
     logger.info("Shutdown signal received.")
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Only respond if message from authorized chat
     if str(update.effective_chat.id) != TELEGRAM_CHAT_ID:
         return
-
     downloaded, editing, ready = status.count_videos()
     msg = (
         f"📊 *Bot Status*\n"
