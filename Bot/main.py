@@ -26,6 +26,10 @@ def handle_shutdown(signum, frame):
     logger.info("Shutdown signal received.")
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Only respond if message from authorized chat
+    if str(update.effective_chat.id) != TELEGRAM_CHAT_ID:
+        return
+
     downloaded, editing, ready = status.count_videos()
     msg = (
         f"📊 *Bot Status*\n"
@@ -42,12 +46,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def telegram_bot_loop():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("status", status_command))
-    await app.start()
-    await app.updater.start_polling()
-    while running:
-        await asyncio.sleep(1)
-    await app.updater.stop()
-    await app.stop()
+    await app.run_polling(stop_signals=None)
 
 async def main_loop():
     telegram_task = asyncio.create_task(telegram_bot_loop())
