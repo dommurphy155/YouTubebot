@@ -1,4 +1,3 @@
-# status.py
 import os
 import time
 import psutil
