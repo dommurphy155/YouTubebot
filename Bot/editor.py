@@ -14,7 +14,6 @@ async def edit_video(input_path: str) -> str:
     try:
         logger.info(f"Editing video: {input_path}")
 
-        # Resize width to 1080, maintain aspect ratio, then crop center to 1080x1920 (vertical)
         (
             ffmpeg
             .input(input_path)
