@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Video Bot Timer
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+Unit=video-bot.service
+
+[Install]
+WantedBy=timers.target
