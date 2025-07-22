@@ -1,36 +1,60 @@
+# status.py
 import os
-import logging
+import time
 import psutil
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
-from datetime import datetime, timedelta
-import subprocess
+import platform
+from datetime import datetime
+from pathlib import Path
 
-logger = logging.getLogger("TelegramVideoBot")
-app = FastAPI()
+BOOT_TIME = time.time()
+VERSION_PATH = Path(__file__).parent / "VERSION"
+DOWNLOAD_DIR = Path(__file__).parent / "downloads"
+EDITING_DIR = Path(__file__).parent / "editing"
+READY_DIR = Path(__file__).parent / "ready"
 
-BOOT_TIME = datetime.fromtimestamp(psutil.boot_time())
+def get_uptime():
+    seconds = time.time() - BOOT_TIME
+    hours, remainder = divmod(int(seconds), 3600)
+    minutes, _ = divmod(remainder, 60)
+    return f"{hours}h {minutes}m"
 
-@app.get("/status")
-def get_status():
-    try:
-        uptime = str(datetime.now() - BOOT_TIME).split('.')[0]
-        cpu = psutil.cpu_percent(interval=0.5)
-        mem = psutil.virtual_memory()
-        disk = psutil.disk_usage('/')
-        load = os.getloadavg()
+def get_cpu_usage():
+    return f"{psutil.cpu_percent()}%"
 
-        logs = subprocess.check_output(["tail", "-n", "20", "/var/log/syslog"]).decode("utf-8", errors="ignore")
+def get_ram_usage():
+    mem = psutil.virtual_memory()
+    return f"{mem.percent}%"
 
-        return JSONResponse({
-            "uptime": uptime,
-            "cpu_percent": cpu,
-            "memory_used_percent": mem.percent,
-            "disk_used_percent": disk.percent,
-            "load_avg": load,
-            "logs": logs
-        })
+def get_disk_usage():
+    disk = psutil.disk_usage('/')
+    return f"{disk.percent}%"
 
-    except Exception as e:
-        logger.error(f"Status endpoint failed: {e}")
-        return JSONResponse(status_code=500, content={"error": str(e)})
+def get_system_load():
+    load1, load5, load15 = os.getloadavg()
+    return f"{load1:.2f}, {load5:.2f}, {load15:.2f}"
+
+def get_bot_version():
+    return VERSION_PATH.read_text().strip() if VERSION_PATH.exists() else "v0.0.1"
+
+def count_videos():
+    downloaded = len(list(DOWNLOAD_DIR.glob("*.mp4")))
+    editing = len(list(EDITING_DIR.glob("*.mp4")))
+    ready = len(list(READY_DIR.glob("*.mp4")))
+    return downloaded, editing, ready
+
+def get_edit_progress():
+    progress_file = Path("edit_progress.txt")
+    if progress_file.exists():
+        return progress_file.read_text().strip()
+    return "N/A"
+
+def get_next_schedule():
+    schedule_file = Path("next_send.txt")
+    if schedule_file.exists():
+        try:
+            ts = float(schedule_file.read_text().strip())
+            dt = datetime.fromtimestamp(ts).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+            return dt
+        except:
+            return "Invalid timestamp"
+    return "Not scheduled"
