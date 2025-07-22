@@ -2,14 +2,20 @@ import asyncio
 import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from bot import scraper, editor, uploader
+import os
 
 logger = logging.getLogger("TelegramVideoBot")
 scheduler = AsyncIOScheduler()
 
+PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY")
+if not PEXELS_API_KEY:
+    logger.error("PEXELS_API_KEY environment variable not set")
+    raise RuntimeError("PEXELS_API_KEY environment variable not set")
+
 async def scheduled_job():
     try:
-        video_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"  # Replace with rotating URL source
-        video_path = await scraper.scrape_video(video_url)
+        # Pass the API key to scraper.scrape_video if scraper supports it
+        video_path = await scraper.scrape_video(api_key=PEXELS_API_KEY)
         if not video_path:
             return
 
@@ -23,4 +29,3 @@ def start_scheduler():
     scheduler.add_job(scheduled_job, "interval", minutes=30)
     scheduler.start()
     logger.info("Scheduler started")
-  
