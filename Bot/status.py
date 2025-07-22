@@ -6,10 +6,10 @@ from datetime import datetime
 from pathlib import Path
 
 BOOT_TIME = time.time()
-VERSION_PATH = Path(__file__).parent / "VERSION"
-DOWNLOAD_DIR = Path(__file__).parent / "downloads"
-EDITING_DIR = Path(__file__).parent / "editing"
-READY_DIR = Path(__file__).parent / "ready"
+VERSION_PATH = Path(__file__).parent.parent / "VERSION"
+DOWNLOAD_DIR = Path(__file__).parent.parent / "downloads"
+EDITING_DIR = Path(__file__).parent.parent / "processed"
+READY_DIR = Path(__file__).parent.parent / "edited"
 
 def get_uptime():
     seconds = time.time() - BOOT_TIME
@@ -42,17 +42,17 @@ def count_videos():
     return downloaded, editing, ready
 
 def get_edit_progress():
-    progress_file = Path("edit_progress.txt")
+    progress_file = Path(__file__).parent.parent / "edit_progress.txt"
     if progress_file.exists():
         return progress_file.read_text().strip()
     return "N/A"
 
 def get_next_schedule():
-    schedule_file = Path("next_send.txt")
+    schedule_file = Path(__file__).parent.parent / "next_send.txt"
     if schedule_file.exists():
         try:
             ts = float(schedule_file.read_text().strip())
-            dt = datetime.fromtimestamp(ts).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+            dt = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
             return dt
         except:
             return "Invalid timestamp"
