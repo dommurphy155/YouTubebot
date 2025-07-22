@@ -1,14 +1,34 @@
-import re
+import logging
+import os
+import asyncio
+from aiogram import Bot
 
-def generate_hashtags(title: str):
-    words = re.findall(r"[A-Za-z]{4,}", title)
-    seen = set()
-    tags = []
-    for w in words:
-        lw = w.lower()
-        if lw not in seen:
-            seen.add(lw)
-            tags.append(f"#{lw}")
-        if len(tags) >= 5:
-            break
-    return " ".join(tags)
+logger = logging.getLogger("TelegramVideoBot")
+
+TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
+TELEGRAM_CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
+
+bot = Bot(token=TELEGRAM_TOKEN, parse_mode="HTML")
+
+async def upload_video(video_path: str):
+    try:
+        logger.info(f"Uploading video: {video_path}")
+        async with bot:
+            await bot.send_document(
+                chat_id=TELEGRAM_CHAT_ID,
+                document=open(video_path, "rb"),
+                caption="🎬 New video",
+                disable_notification=True,
+            )
+        logger.info("Upload successful")
+    except Exception as e:
+        logger.error(f"Upload failed: {e}")
+        raise
+
+def cleanup_files(paths: list[str]):
+    for path in paths:
+        try:
+            os.remove(path)
+            logger.info(f"Deleted file: {path}")
+        except Exception as e:
+            logger.warning(f"Failed to delete {path}: {e}")
