@@ -1,8 +1,6 @@
 import asyncio
 import logging
 import os
-import shlex
-import subprocess
 
 logger = logging.getLogger("TelegramVideoBot")
 
@@ -29,14 +27,15 @@ async def edit_video(input_path: str) -> str:
     logger.info(f"Editing video: {input_path}")
 
     # Build ffmpeg command manually for async subprocess
-    # Scale input to max 1080 width, keep aspect, crop center 1080x1920 vertical video
-    # Use 'fast' preset + CRF 25 for lighter load with decent quality
+    # Scale input to max 1080 width, keep aspect ratio, crop center 1080x1920 vertical video
+    # Trim/crop video duration to between 30-45 seconds, keep original audio
     ffmpeg_cmd = [
         "ffmpeg",
         "-i", input_path,
         "-filter_complex",
         "[0]scale=1080:-1[s0];[s0]crop=1080:1920:(in_w-1080)/2:(in_h-1920)/2[s1]",
         "-map", "[s1]",
+        "-t", "45",              # max duration 45 seconds
         "-vcodec", "libx264",
         "-preset", "fast",
         "-crf", "25",
