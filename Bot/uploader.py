@@ -1,8 +1,7 @@
 import logging
 import os
-import asyncio
 from aiogram import Bot
-from aiogram.types import InputFile
+from aiogram.types.input_file import BufferedInputFile
 
 logger = logging.getLogger("TelegramVideoBot")
 
@@ -15,14 +14,16 @@ async def upload_video(video_path: str):
     try:
         logger.info(f"Uploading video: {video_path}")
         async with bot:
-            input_file = InputFile(video_path)
-            await bot.send_document(
-                chat_id=TELEGRAM_CHAT_ID,
-                document=input_file,
-                caption="🎬 New video",
-                disable_notification=True,
-                parse_mode="HTML"
-            )
+            with open(video_path, "rb") as f:
+                file_data = f.read()
+                input_file = BufferedInputFile(file_data, filename=os.path.basename(video_path))
+                await bot.send_document(
+                    chat_id=TELEGRAM_CHAT_ID,
+                    document=input_file,
+                    caption="🎬 New video",
+                    disable_notification=True,
+                    parse_mode="HTML"
+                )
         logger.info("Upload successful")
     except Exception as e:
         logger.error(f"Upload failed: {e}")
