@@ -25,24 +25,21 @@ async def edit_video(input_path: str) -> str:
     output_path = os.path.join(OUTPUT_DIR, os.path.basename(input_path))
     logger.info(f"Editing video: {input_path}")
 
-    # ffmpeg filter chain to:
-    # 1. scale max width 1080 keeping aspect ratio
-    # 2. crop center 1080x1920 vertical format
-    # 3. remove silence from start and end (silencedetect + trimming)
-    # 4. auto trim to audio duration (max 45s)
-    # 5. enhance contrast/brightness
-    # 6. sharpen video
-    # 7. normalize audio volume
+    # We'll remove the invalid 'trim=start=if(gt(scene,0.05),0,0)' expression.
+    # Instead, we keep fixed max duration 45s via '-t 45' and remove silence using silenceremove filter.
+    # Volume normalization will be applied with loudnorm filter instead of volume=normalize (more compatible).
+    # Sharpening with unsharp filter is kept.
+    # Contrast and brightness enhanced with eq filter.
 
     filter_complex = (
         "[0:v]scale=1080:-1,"
         "crop=1080:1920:(in_w-1080)/2:(in_h-1920)/2,"
         "eq=contrast=1.1:brightness=0.05,"
         "unsharp=luma_msize_x=5:luma_msize_y=5:luma_amount=1.0,"
-        "trim=start='if(gt(scene,0.05),0,0)':end=45,setpts=PTS-STARTPTS[v];"
-        "[0:a]silencedetect=noise=-30dB:d=0.5[aud1];"
-        "[0:a]volume=normalize[a];"
-        "[a]atrim=end=45,asetpts=PTS-STARTPTS[aout]"
+        "setpts=PTS-STARTPTS[v];"
+        "[0:a]silenceremove=start_periods=1:start_silence=0.5:start_threshold=-30dB:"
+        "detection=peak,"
+        "loudnorm=I=-16:TP=-1.5:LRA=11[aout]"
     )
 
     ffmpeg_cmd = [
@@ -51,6 +48,7 @@ async def edit_video(input_path: str) -> str:
         "-filter_complex", filter_complex,
         "-map", "[v]",
         "-map", "[aout]",
+        "-t", "45",
         "-vcodec", "libx264",
         "-preset", "fast",
         "-crf", "25",
