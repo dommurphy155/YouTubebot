@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 from yt_dlp import YoutubeDL
+from pathlib import Path
 
 logger = logging.getLogger("TelegramVideoBot")
 
@@ -20,7 +21,26 @@ YDL_OPTS = {
     "retries": 3,
 }
 
-async def scrape_video(url: str) -> str | None:
+VIDEO_SOURCES = [
+    "https://www.youtube.com/watch?v=dQw4w9WgXcQ",  # Replace/add more valid, short-form URLs
+]
+
+_video_index = 0
+
+def _get_next_url() -> str | None:
+    global _video_index
+    if _video_index >= len(VIDEO_SOURCES):
+        return None
+    url = VIDEO_SOURCES[_video_index]
+    _video_index += 1
+    return url
+
+async def scrape_video() -> str | None:
+    url = _get_next_url()
+    if not url:
+        logger.info("No more videos to scrape.")
+        return None
+
     logger.info(f"Scraping video from URL: {url}")
 
     def download():
@@ -42,3 +62,11 @@ async def scrape_video(url: str) -> str | None:
     else:
         logger.warning(f"Failed to download video from {url}")
         return None
+
+def cleanup_files(paths: list[str]):
+    for path in paths:
+        try:
+            os.remove(path)
+            logger.info(f"Deleted file: {path}")
+        except Exception as e:
+            logger.error(f"Error deleting {path}: {e}")
