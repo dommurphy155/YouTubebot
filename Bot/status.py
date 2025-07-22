@@ -1,25 +1,36 @@
 import os
-from fastapi import FastAPI
-from threading import Thread
-import psutil
-import uvicorn
 import logging
+import psutil
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from datetime import datetime, timedelta
+import subprocess
 
-def start_status_listener(token, chat_id):
-    app = FastAPI()
+logger = logging.getLogger("TelegramVideoBot")
+app = FastAPI()
 
-    @app.get("/status")
-    def status():
-        proc = psutil.Process(os.getpid())
-        return {
-            "uptime": proc.create_time(),
-            "cpu_percent": psutil.cpu_percent(),
-            "memory": proc.memory_info().rss,
-            "videos_in_tmp": len(psutil.os.listdir(psutil.os.tempdir)),
-        }
+BOOT_TIME = datetime.fromtimestamp(psutil.boot_time())
 
-    def run():
-        uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
+@app.get("/status")
+def get_status():
+    try:
+        uptime = str(datetime.now() - BOOT_TIME).split('.')[0]
+        cpu = psutil.cpu_percent(interval=0.5)
+        mem = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
+        load = os.getloadavg()
 
-    Thread(target=run, daemon=True).start()
-    logging.info("Status endpoint active on port 8000")
+        logs = subprocess.check_output(["tail", "-n", "20", "/var/log/syslog"]).decode("utf-8", errors="ignore")
+
+        return JSONResponse({
+            "uptime": uptime,
+            "cpu_percent": cpu,
+            "memory_used_percent": mem.percent,
+            "disk_used_percent": disk.percent,
+            "load_avg": load,
+            "logs": logs
+        })
+
+    except Exception as e:
+        logger.error(f"Status endpoint failed: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
