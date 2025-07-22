@@ -1,21 +1,34 @@
-import ffmpeg
-import os
+import asyncio
 import logging
+import os
 import tempfile
+import ffmpeg
 
-def edit_video(input_path):
-    output = os.path.join(tempfile.gettempdir(), "short.mp4")
+logger = logging.getLogger("TelegramVideoBot")
+
+OUTPUT_DIR = "/home/ubuntu/YouTubebot/processed"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+async def edit_video(input_path: str) -> str:
+    output_path = os.path.join(OUTPUT_DIR, os.path.basename(input_path))
+
     try:
+        logger.info(f"Editing video: {input_path}")
+
+        # Resize, crop center square, convert to vertical for iPhone (9:16), compress
         (
-            ffmpeg.input(input_path)
-            .trim(start=0, duration=30)
-            .filter("scale", 1080, -2)
-            .output(output, vcodec="libx264", crf=23, preset="fast", acodec="aac", audio_bitrate="96k")
+            ffmpeg
+            .input(input_path)
+            .filter("scale", 1080, -1)
+            .filter("crop", 1080, 1920)
+            .output(output_path, vcodec='libx264', crf=23, preset='medium', acodec='aac', movflags='faststart')
             .overwrite_output()
-            .run(quiet=True)
+            .run(capture_stdout=True, capture_stderr=True)
         )
-        logging.info("Edited video %s", output)
-        return output
+
+        logger.info(f"Edited video saved to: {output_path}")
+        return output_path
+
     except ffmpeg.Error as e:
-        logging.error("FFmpeg error: %s", e)
-        return None
+        logger.error(f"FFmpeg failed: {e.stderr.decode() if e.stderr else e}")
+        raise
