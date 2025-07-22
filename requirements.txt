@@ -1,7 +1,6 @@
-yt-dlp
-ffmpeg-python
-python-telegram-bot==20.4
-apscheduler
-fastapi
-uvicorn
-psutil
+yt-dlp==2024.5.27
+ffmpeg-python==0.2.0
+python-telegram-bot==20.7
+uvicorn==0.30.1
+fastapi==0.111.0
+psutil==5.9.8
