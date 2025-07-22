@@ -6,12 +6,12 @@ logging.basicConfig(level=logging.INFO)
 
 async def main():
     logger.info("Starting Telegram Video Bot")
-    try:
-        while True:
-            logger.info("Bot running...")
-            await asyncio.sleep(60)
-    except asyncio.CancelledError:
-        logger.info("Bot stopped")
+    while True:
+        logger.info("Bot running...")
+        await asyncio.sleep(60)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Bot interrupted and stopped")
