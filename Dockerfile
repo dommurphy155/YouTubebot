@@ -21,5 +21,6 @@ COPY bot ./bot
 RUN mkdir -p /app/downloads /app/edited
 
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
 
-CMD ["python", "-u", "bot/main.py"]
+CMD ["python", "-m", "bot.main"]
