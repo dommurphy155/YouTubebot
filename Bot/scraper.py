@@ -69,22 +69,108 @@ async def download_video(url: str, filename: str) -> str | None:
         logger.error(f"Download exception: {e}")
         return None
 
+async def has_audio_stream(filepath: str) -> bool:
+    """Check if video file has an audio stream using ffprobe."""
+    cmd = [
+        "ffprobe",
+        "-v", "error",
+        "-select_streams", "a",
+        "-show_entries", "stream=index",
+        "-of", "csv=p=0",
+        filepath
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    stdout, _ = await proc.communicate()
+    has_audio = bool(stdout.strip())
+    if not has_audio:
+        logger.warning(f"No audio stream found in {filepath}")
+    return has_audio
+
+async def get_video_duration(filepath: str) -> float | None:
+    """Get video duration in seconds."""
+    cmd = [
+        "ffprobe",
+        "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        filepath
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    stdout, _ = await proc.communicate()
+    try:
+        duration = float(stdout.strip())
+        return duration
+    except (ValueError, TypeError):
+        logger.warning(f"Failed to get duration for {filepath}")
+        return None
+
+async def get_video_resolution(filepath: str) -> tuple[int, int] | None:
+    """Get video resolution (width, height)."""
+    cmd = [
+        "ffprobe",
+        "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=width,height",
+        "-of", "csv=s=x:p=0",
+        filepath
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    stdout, _ = await proc.communicate()
+    try:
+        w, h = stdout.decode().strip().split('x')
+        return int(w), int(h)
+    except Exception:
+        logger.warning(f"Failed to get resolution for {filepath}")
+        return None
+
+async def is_video_suitable(filepath: str) -> bool:
+    # Check audio presence
+    if not await has_audio_stream(filepath):
+        return False
+    # Check duration limits (>=5s)
+    duration = await get_video_duration(filepath)
+    if duration is None or duration < 5:
+        logger.warning(f"Video too short or duration unknown: {filepath}")
+        return False
+    # Check resolution cap (max 3840x2160 for 4K)
+    resolution = await get_video_resolution(filepath)
+    if resolution is None:
+        return False
+    width, height = resolution
+    if width > 3840 or height > 2160:
+        logger.warning(f"Video resolution too high: {width}x{height} in {filepath}")
+        return False
+    return True
+
 async def scrape_video() -> str | None:
     videos = await fetch_pexels_videos()
     if not videos:
         logger.info("No videos fetched from Pexels")
         return None
 
-    # sort by duration quality (10–60s) and resolution
-    def is_suitable(video):
+    # Filter videos by duration 10–60s
+    def is_suitable_duration(video):
         duration = video.get("duration", 0)
         return 10 <= duration <= 60
 
-    candidates = list(filter(is_suitable, videos))
+    candidates = list(filter(is_suitable_duration, videos))
     if not candidates:
         logger.warning("No suitable-duration videos found")
         return None
 
+    # Pick random candidate and best quality mp4 file
     video = random.choice(candidates)
     video_files = video.get("video_files", [])
     if not video_files:
@@ -97,7 +183,8 @@ async def scrape_video() -> str | None:
         return None
 
     def score(f):
-        return f.get("width", 0) / (f.get("file_size", 1) / 1024 / 1024 + 1)
+        size_mb = f.get("file_size", 1) / (1024 * 1024)
+        return f.get("width", 0) / (size_mb + 1)
 
     best_file = max(mp4_files, key=score)
 
@@ -113,8 +200,17 @@ async def scrape_video() -> str | None:
     video_path = await download_video(video_url, filename)
 
     if video_path:
-        logger.info(f"Downloaded video saved to {video_path}")
-        return video_path
+        # Check suitability before returning
+        if await is_video_suitable(video_path):
+            logger.info(f"Downloaded video suitable: {video_path}")
+            return video_path
+        else:
+            logger.warning(f"Downloaded video not suitable, deleting: {video_path}")
+            try:
+                os.remove(video_path)
+            except Exception as e:
+                logger.error(f"Failed to delete unsuitable video {video_path}: {e}")
+            return None
     else:
         logger.warning("Failed to download video from Pexels")
         return None
