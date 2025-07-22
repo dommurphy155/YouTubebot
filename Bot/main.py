@@ -3,7 +3,7 @@ import logging
 import signal
 import sys
 
-from bot import scraper, editor, uploader
+from Bot import scraper, editor, uploader
 
 logger = logging.getLogger("TelegramVideoBot")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
