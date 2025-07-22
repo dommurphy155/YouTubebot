@@ -3,6 +3,8 @@ import logging
 import signal
 import sys
 
+from bot import scraper, editor, uploader
+
 logger = logging.getLogger("TelegramVideoBot")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -10,15 +12,23 @@ running = True
 
 def handle_shutdown(signum, frame):
     global running
-    logger.info("Shutdown signal received.")
     running = False
+    logger.info("Shutdown signal received.")
 
 async def main_loop():
-    logger.info("Starting Telegram Video Bot")
     while running:
-        logger.info("Bot is running...")
-        await asyncio.sleep(60)
-    logger.info("Exiting bot cleanly.")
+        try:
+            video_path = await scraper.scrape_video()
+            if not video_path:
+                await asyncio.sleep(60)
+                continue
+
+            edited_path = await editor.edit_video(video_path)
+            await uploader.upload_video(edited_path)
+            scraper.cleanup_files([video_path, edited_path])
+        except Exception as e:
+            logger.error(f"Error in main loop: {e}")
+        await asyncio.sleep(10)
 
 if __name__ == "__main__":
     signal.signal(signal.SIGTERM, handle_shutdown)
