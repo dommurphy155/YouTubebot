@@ -386,10 +386,8 @@ def cleanup_files(paths: List[str]):
         except Exception as e:
             logger.error(f"Error deleting {path}: {e}")
 
-# Bonus: Add a simple IP reputation check and restart trigger (optional)
 
 async def check_ip_reputation():
-    # Dummy example, replace with your IP reputation check or blacklist API
     import aiohttp
     try:
         async with aiohttp.ClientSession() as session:
@@ -399,8 +397,6 @@ async def check_ip_reputation():
                     return False
                 data = await resp.json()
                 ip = data.get("ip")
-                # Add blacklist check here with IP (external API)
-                # If flagged, log and consider restart/reconnect logic
                 logger.info(f"Current external IP: {ip}")
                 return True
     except Exception as e:
