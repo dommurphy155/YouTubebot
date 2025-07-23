@@ -14,14 +14,18 @@ import status
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
+# Logger setup
 logger = logging.getLogger("TelegramVideoBot")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
+# Bot control
 running = True
 
+# Environment variables (injected via systemd)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
+# yt-dlp binary path (inside venv)
 YTDLP_PATH = "/home/ubuntu/YouTubebot/venv/bin/yt-dlp"
 
 def handle_shutdown(signum, frame):
@@ -72,7 +76,7 @@ async def stop_telegram_bot(app):
     logger.info("Telegram bot stopped.")
 
 async def main_loop():
-    update_ytdlp()  # Auto-update yt-dlp on startup
+    update_ytdlp()
 
     app = await start_telegram_bot()
     try:
@@ -80,19 +84,19 @@ async def main_loop():
             try:
                 result = await scraper.scrape_video()
                 if not result:
-                    await asyncio.sleep(60 + random.uniform(5, 15))  # add jitter to reduce blocking
+                    logger.info("No suitable videos found. Waiting...")
+                    await asyncio.sleep(60 + random.uniform(5, 15))
                     continue
-                video_path, _title = result  # unpack tuple, discard title if unused
 
+                video_path, _title = result  # _title is optional, for future captioning
                 edited_path = await editor.edit_video(video_path)
                 await uploader.upload_video(edited_path)
-                scraper.cleanup_files([video_path, edited_path])
 
-                # Random delay 10-30 seconds to avoid triggering Reddit rate limits
-                await asyncio.sleep(random.uniform(10, 30))
+                scraper.cleanup_files([video_path, edited_path])
+                await asyncio.sleep(random.uniform(10, 30))  # Anti-rate-limiting
             except Exception as e:
-                logger.error(f"Error in main loop: {e}")
-                await asyncio.sleep(30)  # pause on error before retry
+                logger.error(f"Main loop error: {e}")
+                await asyncio.sleep(30)
     finally:
         await stop_telegram_bot(app)
 
