@@ -20,10 +20,12 @@ running = True
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
+
 def handle_shutdown(signum, frame):
     global running
     running = False
     logger.info("Shutdown signal received.")
+
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_chat.id) != TELEGRAM_CHAT_ID:
@@ -44,31 +46,41 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in /status command: {e}")
 
-async def telegram_bot_loop():
-    try:
-        app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-        app.add_handler(CommandHandler("status", status_command))
-        await app.run_polling(stop_signals=None)
-    except Exception as e:
-        logger.error(f"Telegram bot failed: {e}")
+
+async def start_telegram_bot():
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("status", status_command))
+    await app.initialize()
+    await app.start()
+    logger.info("Telegram bot started.")
+    return app
+
+
+async def stop_telegram_bot(app):
+    await app.stop()
+    await app.shutdown()
+    logger.info("Telegram bot stopped.")
+
 
 async def main_loop():
-    telegram_task = asyncio.create_task(telegram_bot_loop())
-    while running:
-        try:
-            video_path = await scraper.scrape_video()
-            if not video_path:
-                await asyncio.sleep(60)
-                continue
+    app = await start_telegram_bot()
+    try:
+        while running:
+            try:
+                video_path = await scraper.scrape_video()
+                if not video_path:
+                    await asyncio.sleep(60)
+                    continue
 
-            edited_path = await editor.edit_video(video_path)
-            await uploader.upload_video(edited_path)
-            scraper.cleanup_files([video_path, edited_path])
-        except Exception as e:
-            logger.error(f"Error in main loop: {e}")
-        await asyncio.sleep(10)
+                edited_path = await editor.edit_video(video_path)
+                await uploader.upload_video(edited_path)
+                scraper.cleanup_files([video_path, edited_path])
+            except Exception as e:
+                logger.error(f"Error in main loop: {e}")
+            await asyncio.sleep(10)
+    finally:
+        await stop_telegram_bot(app)
 
-    await telegram_task
 
 if __name__ == "__main__":
     signal.signal(signal.SIGTERM, handle_shutdown)
