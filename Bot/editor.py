@@ -41,6 +41,22 @@ def detect_best_segment(video_path: str, max_duration: int = 45) -> float:
         logger.warning(f"Segment detection failed: {e}")
         return 0.0
 
+def has_audio_stream(video_path: str) -> bool:
+    try:
+        cmd = [
+            "ffprobe",
+            "-v", "error",
+            "-select_streams", "a",
+            "-show_entries", "stream=index",
+            "-of", "json",
+            video_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        info = json.loads(result.stdout)
+        return bool(info.get("streams"))
+    except Exception:
+        return False
+
 async def edit_video(input_path: str) -> str:
     output_path = os.path.join(OUTPUT_DIR, os.path.basename(input_path))
     logger.info(f"Editing video: {input_path}")
@@ -48,39 +64,66 @@ async def edit_video(input_path: str) -> str:
     start_time = detect_best_segment(input_path)
     logger.info(f"Using start time: {start_time:.2f}s")
 
-    filter_complex = (
-        "[0:v]scale=1080:-1,"
-        "crop=1080:1920:(in_w-1080)/2:(in_h-1920)/2,"
-        "eq=contrast=1.1:brightness=0.05,"
-        "unsharp=5:5:1.0,"
-        "fade=t=in:st=0:d=1,fade=t=out:st=44:d=1,"
-        "minterpolate='fps=30:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1',"
-        "setpts=PTS-STARTPTS[v];"
-        "[0:a]silenceremove=start_periods=1:start_silence=0.5:start_threshold=-30dB:"
-        "stop_periods=1:stop_silence=0.5:stop_threshold=-30dB,"
-        "afade=t=in:ss=0:d=1,afade=t=out:st=44:d=1,"
-        "loudnorm=I=-16:TP=-1.5:LRA=11[aout]"
-    )
-
-    ffmpeg_cmd = [
-        "ffmpeg",
-        "-ss", str(start_time),
-        "-i", input_path,
-        "-filter_complex", filter_complex,
-        "-map", "[v]",
-        "-map", "[aout]",
-        "-t", "45",
-        "-vcodec", "libx264",
-        "-preset", "fast",
-        "-crf", "25",
-        "-acodec", "aac",
-        "-b:a", "128k",
-        "-pix_fmt", "yuv420p",
-        "-movflags", "faststart",
-        "-threads", "2",
-        "-y",
-        output_path
-    ]
+    if has_audio_stream(input_path):
+        filter_complex = (
+            "[0:v]scale=1080:-1,"
+            "crop=1080:1920:(in_w-1080)/2:(in_h-1920)/2,"
+            "eq=contrast=1.1:brightness=0.05,"
+            "unsharp=5:5:1.0,"
+            "fade=t=in:st=0:d=1,fade=t=out:st=44:d=1,"
+            "minterpolate='fps=30:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1',"
+            "setpts=PTS-STARTPTS[v];"
+            "[0:a]silenceremove=start_periods=1:start_silence=0.5:start_threshold=-30dB:"
+            "stop_periods=1:stop_silence=0.5:stop_threshold=-30dB,"
+            "afade=t=in:ss=0:d=1,afade=t=out:st=44:d=1,"
+            "loudnorm=I=-16:TP=-1.5:LRA=11[aout]"
+        )
+        ffmpeg_cmd = [
+            "ffmpeg",
+            "-ss", str(start_time),
+            "-i", input_path,
+            "-filter_complex", filter_complex,
+            "-map", "[v]",
+            "-map", "[aout]",
+            "-t", "45",
+            "-vcodec", "libx264",
+            "-preset", "fast",
+            "-crf", "25",
+            "-acodec", "aac",
+            "-b:a", "128k",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "faststart",
+            "-threads", "2",
+            "-y",
+            output_path
+        ]
+    else:
+        # No audio present, drop audio filters & maps
+        filter_complex = (
+            "[0:v]scale=1080:-1,"
+            "crop=1080:1920:(in_w-1080)/2:(in_h-1920)/2,"
+            "eq=contrast=1.1:brightness=0.05,"
+            "unsharp=5:5:1.0,"
+            "fade=t=in:st=0:d=1,fade=t=out:st=44:d=1,"
+            "minterpolate='fps=30:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1',"
+            "setpts=PTS-STARTPTS[v]"
+        )
+        ffmpeg_cmd = [
+            "ffmpeg",
+            "-ss", str(start_time),
+            "-i", input_path,
+            "-filter_complex", filter_complex,
+            "-map", "[v]",
+            "-t", "45",
+            "-vcodec", "libx264",
+            "-preset", "fast",
+            "-crf", "25",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "faststart",
+            "-threads", "2",
+            "-y",
+            output_path
+        ]
 
     await run_ffmpeg_async(ffmpeg_cmd)
     logger.info(f"Edited video saved to: {output_path}")
