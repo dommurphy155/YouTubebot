@@ -47,7 +47,7 @@ def _handle_shutdown():
 for sig in (signal.SIGINT, signal.SIGTERM):
     signal.signal(sig, lambda *_: _handle_shutdown())
 
-# === ASYNC FFMPEG WRAPPER ===
+# === ASYNC FFMPEG WRAPPER (FIXED HERE) ===
 _ffmpeg_semaphore = asyncio.Semaphore(1)
 
 async def run_ffmpeg_async(cmd: List[str]) -> None:
@@ -59,7 +59,8 @@ async def run_ffmpeg_async(cmd: List[str]) -> None:
         )
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
-            raise RuntimeError(f"ffmpeg failed: {stderr.decode().strip()}")
+            logger.error("FFmpeg stderr:\n" + stderr.decode().strip())
+            raise RuntimeError(f"ffmpeg failed with exit code {proc.returncode}")
 
 # === VIDEO SEGMENT ANALYSIS ===
 def detect_best_segment(video_path: str, max_duration: int = 45) -> float:
@@ -72,7 +73,6 @@ def detect_best_segment(video_path: str, max_duration: int = 45) -> float:
             video_path
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
         total_duration = float(result.stdout.strip())
-        # Center segment if video longer than max_duration, else start at 0
         return max(0.0, round((total_duration - max_duration) / 2, 2)) if total_duration > max_duration else 0.0
     except Exception as e:
         logger.warning(f"Failed to detect segment: {e}")
@@ -91,16 +91,13 @@ def has_audio_stream(video_path: str) -> bool:
     except:
         return False
 
-# === EXTENDED VIDEO SANITY CHECK ===
 def is_video_corrupted(video_path: str) -> bool:
-    # Use ffmpeg to detect if video can be decoded without errors
-    # Return True if corrupted (bad), False if good
     cmd = [
         "ffmpeg", "-v", "error", "-i", video_path,
         "-f", "null", "-"
     ]
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    return bool(result.stderr.strip())  # Any error output means likely corrupted
+    return bool(result.stderr.strip())
 
 def get_video_duration(video_path: str) -> float:
     try:
@@ -115,7 +112,7 @@ def get_video_duration(video_path: str) -> float:
         logger.warning(f"Failed to get video duration: {e}")
         return 0.0
 
-# === MAIN EDIT FUNCTION WITH IMPROVED FLEXIBILITY ===
+# === MAIN EDIT FUNCTION (UNCHANGED LOGIC, NOW USES IMPROVED RUN) ===
 async def edit_video(input_path: str) -> str:
     output_path = os.path.join(OUTPUT_DIR, os.path.basename(input_path))
     total_duration = get_video_duration(input_path)
@@ -123,7 +120,6 @@ async def edit_video(input_path: str) -> str:
     
     logger.info(f"Editing video: {input_path} (start={start_time}s, total_duration={total_duration}s)")
 
-    # Scale width to 1080, keep aspect ratio, crop vertically to 1080x1920 centered
     common_vfilters = (
         "scale=1080:-1,"
         "crop=1080:1920:(in_w-1080)/2:(in_h-1920)/2,"
@@ -197,7 +193,7 @@ async def edit_video(input_path: str) -> str:
             logger.info(f"Deleted incomplete file: {output_path}")
         raise
 
-# === RELAXED SANITY CHECK - ALLOW ANY RESOLUTION ===
+# === RELAXED SANITY CHECK ===
 def is_video_suitable(path: str) -> bool:
     try:
         if is_video_corrupted(path):
@@ -214,7 +210,6 @@ def is_video_suitable(path: str) -> bool:
         width, height = int(data["width"]), int(data["height"])
         duration = float(data["duration"])
 
-        # Drop resolution minimum check entirely, only duration check remains
         if duration < 1:
             logger.warning(f"Video rejected: duration too short {duration}s")
             return False
@@ -227,7 +222,7 @@ def is_video_suitable(path: str) -> bool:
         logger.warning(f"Video suitability check failed: {e}")
         return False
 
-# === OPTIONAL: SHUTDOWN AWAITER FOR CLEAN EXITS ===
+# === SHUTDOWN HANDLER ===
 async def await_shutdown():
     await shutdown_event.wait()
     logger.info("Exiting editor module cleanly.")
