@@ -123,8 +123,7 @@ async def edit_video(input_path: str) -> str:
     
     logger.info(f"Editing video: {input_path} (start={start_time}s, total_duration={total_duration}s)")
 
-    # Force scale to 1080 width, keep aspect ratio, crop to 1080x1920 vertically centered
-    # Add color correction, unsharp, fade-in/out, frame interpolation for smoothness
+    # Scale width to 1080, keep aspect ratio, crop vertically to 1080x1920 centered
     common_vfilters = (
         "scale=1080:-1,"
         "crop=1080:1920:(in_w-1080)/2:(in_h-1920)/2,"
@@ -136,12 +135,10 @@ async def edit_video(input_path: str) -> str:
 
     has_audio = has_audio_stream(input_path)
     
-    # Video duration under 15s: loop or slow down to reach 15s minimum
     min_duration = 15
     target_duration = min(45, max(min_duration, total_duration))
     ffmpeg_extra = []
     if total_duration < min_duration:
-        # Loop input video to reach min_duration
         loop_count = int(min_duration // total_duration) + 1
         ffmpeg_extra.extend([
             "-stream_loop", str(loop_count - 1)
@@ -187,7 +184,6 @@ async def edit_video(input_path: str) -> str:
     ffmpeg_cmd = [x for x in ffmpeg_cmd if x is not None]
 
     try:
-        # Double-check video is not corrupted before editing
         if is_video_corrupted(input_path):
             raise RuntimeError("Input video is corrupted or unreadable")
 
@@ -201,10 +197,9 @@ async def edit_video(input_path: str) -> str:
             logger.info(f"Deleted incomplete file: {output_path}")
         raise
 
-# === RELAXED SANITY CHECK ===
+# === RELAXED SANITY CHECK - ALLOW ANY RESOLUTION ===
 def is_video_suitable(path: str) -> bool:
     try:
-        # Just check video is readable and has minimal resolution + duration
         if is_video_corrupted(path):
             logger.warning("Video rejected: corrupted")
             return False
@@ -219,15 +214,11 @@ def is_video_suitable(path: str) -> bool:
         width, height = int(data["width"]), int(data["height"])
         duration = float(data["duration"])
 
-        if width < 640 or height < 360:
-            logger.warning(f"Video rejected: resolution too low {width}x{height}")
-            return False
-
+        # Drop resolution minimum check entirely, only duration check remains
         if duration < 1:
             logger.warning(f"Video rejected: duration too short {duration}s")
             return False
 
-        # Accept any duration up to 90s — trimming done in editor
         if duration > 90:
             logger.info(f"Video accepted but will be trimmed: duration {duration}s")
         
