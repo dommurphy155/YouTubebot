@@ -1,10 +1,7 @@
 yt-dlp==2024.5.27
 ffmpeg-python==0.2.0
-aiogram==3.21.0
+aiogram==3.13.1
 uvicorn==0.30.1
 fastapi==0.111.0
 psutil==5.9.8
 aiohttp==3.12.14
-aiofiles==0.6.0
-asyncpraw==7.3.0
-asyncprawcore==2.4.0
