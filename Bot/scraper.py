@@ -1,8 +1,9 @@
+# scraper.py
+
 import os
 import asyncio
 import logging
 import random
-import hashlib
 from typing import Optional, Tuple, List
 
 import praw
@@ -114,7 +115,7 @@ async def download_file(url: str, output_path: str, max_retries=3) -> Optional[s
     logger.error(f"Failed to download after {max_retries} attempts: {url}")
     return None
 
-# FIXED: import is_video_suitable correctly, ensure it is async
+# Import is_video_suitable synchronously (no await)
 from editor import is_video_suitable
 
 async def scrape_video() -> Optional[Tuple[str, str]]:
@@ -131,8 +132,7 @@ async def scrape_video() -> Optional[Tuple[str, str]]:
         await asyncio.sleep(random.uniform(3, 10))
 
         path = await download_file(url, output_path)
-        # FIXED: is_video_suitable is async, so await it correctly.
-        if path and await is_video_suitable(path):
+        if path and is_video_suitable(path):  # <-- NO await here, sync call
             return path, title
 
         if path:
