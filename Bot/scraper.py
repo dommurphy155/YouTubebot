@@ -1,8 +1,12 @@
-import asyncio
-import logging
 import os
+import asyncio
 import aiohttp
+import logging
 import random
+import time
+from datetime import datetime, timedelta
+
+import asyncpraw
 
 logger = logging.getLogger("TelegramVideoBot")
 
@@ -20,32 +24,36 @@ REDDIT_SUBREDDITS = [
     "IdiotsInCars"
 ]
 
-PUSHSHIFT_API_URL = "https://api.pushshift.io/reddit/search/submission/"
+REDDIT_CLIENT_ID = os.environ["REDDIT_CLIENT_ID"]
+REDDIT_CLIENT_SECRET = os.environ["REDDIT_CLIENT_SECRET"]
+REDDIT_USER_AGENT = "RedditVideoScraperBot/1.0 by u/No_Education_9299"
 
-async def fetch_reddit_videos(subreddit: str, limit: int = 50):
-    params = {
-        "subreddit": subreddit,
-        "sort": "desc",
-        "sort_type": "score",
-        "after": "7d",
-        "is_video": "true",
-        "size": limit
-    }
-    timeout = aiohttp.ClientTimeout(total=10)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+async def get_reddit_instance():
+    return asyncpraw.Reddit(
+        client_id=REDDIT_CLIENT_ID,
+        client_secret=REDDIT_CLIENT_SECRET,
+        user_agent=REDDIT_USER_AGENT
+    )
+
+async def fetch_reddit_videos(limit_per_sub=50):
+    reddit = await get_reddit_instance()
+    candidates = []
+
+    for subreddit_name in REDDIT_SUBREDDITS:
         try:
-            async with session.get(PUSHSHIFT_API_URL, params=params) as resp:
-                if resp.status != 200:
-                    logger.error(f"Pushshift API error: {resp.status} | Subreddit: {subreddit}")
-                    return []
-                data = await resp.json()
-                return data.get("data", [])
-        except asyncio.TimeoutError:
-            logger.error(f"Pushshift API request timed out for subreddit {subreddit}")
-            return []
+            subreddit = await reddit.subreddit(subreddit_name)
+            async for post in subreddit.top(time_filter="week", limit=limit_per_sub):
+                if not post.is_video or not hasattr(post, "media"):
+                    continue
+                reddit_video = post.media.get("reddit_video", {})
+                fallback_url = reddit_video.get("fallback_url")
+                if fallback_url:
+                    if post.score >= 12000 and post.num_comments >= 5000:
+                        candidates.append((post.id, fallback_url))
         except Exception as e:
-            logger.error(f"Pushshift API request failed for subreddit {subreddit}: {e}")
-            return []
+            logger.error(f"Error fetching from subreddit {subreddit_name}: {e}")
+    await reddit.close()
+    return candidates
 
 async def download_video(url: str, filename: str) -> str | None:
     path = os.path.join(DOWNLOAD_DIR, filename)
@@ -60,152 +68,94 @@ async def download_video(url: str, filename: str) -> str | None:
                     async for chunk in resp.content.iter_chunked(8192):
                         f.write(chunk)
         return path
-    except asyncio.TimeoutError:
-        logger.error("Video download timed out")
-        return None
     except Exception as e:
-        logger.error(f"Download exception: {e}")
+        logger.error(f"Error downloading video from {url}: {e}")
         return None
 
 async def has_audio_stream(filepath: str) -> bool:
     cmd = [
-        "ffprobe",
-        "-v", "error",
+        "ffprobe", "-v", "error",
         "-select_streams", "a",
         "-show_entries", "stream=index",
-        "-of", "csv=p=0",
-        filepath
+        "-of", "csv=p=0", filepath
     ]
     proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
     stdout, _ = await proc.communicate()
-    has_audio = bool(stdout.strip())
-    if not has_audio:
-        logger.warning(f"No audio stream found in {filepath}")
-    return has_audio
+    return bool(stdout.strip())
 
 async def get_video_duration(filepath: str) -> float | None:
     cmd = [
-        "ffprobe",
-        "-v", "error",
+        "ffprobe", "-v", "error",
         "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1",
         filepath
     ]
     proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
     stdout, _ = await proc.communicate()
     try:
-        duration = float(stdout.strip())
-        return duration
-    except (ValueError, TypeError):
-        logger.warning(f"Failed to get duration for {filepath}")
+        return float(stdout.strip())
+    except:
         return None
 
 async def get_video_resolution(filepath: str) -> tuple[int, int] | None:
     cmd = [
-        "ffprobe",
-        "-v", "error",
+        "ffprobe", "-v", "error",
         "-select_streams", "v:0",
         "-show_entries", "stream=width,height",
-        "-of", "csv=s=x:p=0",
-        filepath
+        "-of", "csv=s=x:p=0", filepath
     ]
     proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
     stdout, _ = await proc.communicate()
     try:
         w, h = stdout.decode().strip().split('x')
         return int(w), int(h)
-    except Exception:
-        logger.warning(f"Failed to get resolution for {filepath}")
+    except:
         return None
 
 async def is_video_suitable(filepath: str) -> bool:
     if not await has_audio_stream(filepath):
+        logger.warning(f"No audio stream in {filepath}")
         return False
     duration = await get_video_duration(filepath)
     if duration is None or not (20 <= duration <= 60):
-        logger.warning(f"Video duration not in range 20-60s or unknown: {filepath}")
+        logger.warning(f"Unsuitable duration: {filepath}")
         return False
     resolution = await get_video_resolution(filepath)
     if resolution is None:
         return False
-    width, height = resolution
-    if width > 3840 or height > 2160:
-        logger.warning(f"Video resolution too high: {width}x{height} in {filepath}")
+    w, h = resolution
+    if w > 3840 or h > 2160:
+        logger.warning(f"Too high resolution: {w}x{h} in {filepath}")
         return False
     return True
 
 async def scrape_video() -> str | None:
-    # Aggregate videos from all subreddits
-    all_videos = []
-    for subreddit in REDDIT_SUBREDDITS:
-        vids = await fetch_reddit_videos(subreddit)
-        all_videos.extend(vids)
-
-    if not all_videos:
-        logger.info("No videos fetched from Reddit")
+    videos = await fetch_reddit_videos()
+    if not videos:
+        logger.warning("No suitable Reddit videos found.")
         return None
 
-    # Filter by score and comments thresholds
-    def is_viral(video):
-        score = video.get("score", 0)
-        comments = video.get("num_comments", 0)
-        is_vid = video.get("is_video", False)
-        return is_vid and score >= 12000 and comments >= 5000
-
-    viral_videos = list(filter(is_viral, all_videos))
-    if not viral_videos:
-        logger.warning("No viral videos found based on score/comments")
-        return None
-
-    # Pick a random viral video with Reddit native video url
-    candidates = []
-    for video in viral_videos:
-        media = video.get("media")
-        if not media:
-            continue
-        reddit_video = media.get("reddit_video")
-        if reddit_video:
-            fallback_url = reddit_video.get("fallback_url")
-            if fallback_url:
-                candidates.append((video, fallback_url))
-
-    if not candidates:
-        logger.warning("No Reddit native video URLs found")
-        return None
-
-    video, video_url = random.choice(candidates)
-    video_id = video.get("id") or video.get("name") or str(random.randint(1000000, 9999999))
-    filename = f"{video_id}.mp4"
-
-    logger.info(f"Downloading Reddit video {video_id} from {video_url}")
-    video_path = await download_video(video_url, filename)
-
-    if video_path:
-        if await is_video_suitable(video_path):
-            logger.info(f"Downloaded video suitable: {video_path}")
+    random.shuffle(videos)
+    for video_id, video_url in videos:
+        filename = f"{video_id}.mp4"
+        logger.info(f"Attempting download of {video_id} from {video_url}")
+        video_path = await download_video(video_url, filename)
+        if video_path and await is_video_suitable(video_path):
+            logger.info(f"Video ready: {video_path}")
             return video_path
-        else:
-            logger.warning(f"Downloaded video not suitable, deleting: {video_path}")
+        if video_path:
             try:
                 os.remove(video_path)
+                logger.info(f"Deleted unsuitable video: {video_path}")
             except Exception as e:
-                logger.error(f"Failed to delete unsuitable video {video_path}: {e}")
-            return None
-    else:
-        logger.warning("Failed to download video from Reddit")
-        return None
+                logger.error(f"Failed to delete {video_path}: {e}")
+    return None
 
 def cleanup_files(paths: list[str]):
     for path in paths:
