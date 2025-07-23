@@ -9,6 +9,7 @@ import praw
 import shlex
 import subprocess
 import aiohttp
+import requests
 
 logger = logging.getLogger("TelegramVideoBot")
 logging.basicConfig(level=logging.INFO)
@@ -197,6 +198,14 @@ async def head_check_url(url: str, timeout=10) -> Optional[int]:
         logger.warning(f"HEAD failed {url}: {e}")
         return None
 
+def resolve_reddit_url(short_url: str) -> str:
+    try:
+        resp = requests.head(short_url, allow_redirects=True, timeout=5)
+        return resp.url
+    except Exception as e:
+        logger.warning(f"Failed to resolve {short_url}: {e}")
+        return short_url
+
 async def fetch_reddit_videos(limit_per_sub=50) -> List[Tuple[str, str]]:
     reddit = get_reddit_instance()
     results = []
@@ -229,6 +238,7 @@ async def fetch_reddit_videos(limit_per_sub=50) -> List[Tuple[str, str]]:
     return results
 
 async def download_reddit_video_with_ytdlp(post_url: str, output_dir: str) -> Optional[str]:
+    post_url = resolve_reddit_url(post_url)
     id_ = post_url.rstrip('/').split("/")[-1].split("?")[0]
     output_path = os.path.join(output_dir, f"{id_}.mp4")
 
