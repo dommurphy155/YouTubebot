@@ -67,10 +67,11 @@ async def main_loop():
     try:
         while running:
             try:
-                video_path = await scraper.scrape_video()
-                if not video_path:
+                result = await scraper.scrape_video()
+                if not result:
                     await asyncio.sleep(60)
                     continue
+                video_path, _title = result  # unpack tuple, discard title if unused
 
                 edited_path = await editor.edit_video(video_path)
                 await uploader.upload_video(edited_path)
