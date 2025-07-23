@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from typing import List
 
 logger = logging.getLogger("TelegramVideoBot")
 
@@ -9,7 +10,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 _ffmpeg_semaphore = asyncio.Semaphore(1)
 
-async def run_ffmpeg_async(cmd: list[str]) -> None:
+async def run_ffmpeg_async(cmd: List[str]) -> None:
     async with _ffmpeg_semaphore:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
