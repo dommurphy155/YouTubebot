@@ -1,8 +1,8 @@
 import logging
 import os
+import subprocess
 from typing import List
 from telegram import Bot, InputFile
-from moviepy.editor import VideoFileClip
 
 logger = logging.getLogger("TelegramVideoBot")
 logging.basicConfig(level=logging.INFO)
@@ -14,11 +14,19 @@ bot = Bot(token=TELEGRAM_TOKEN)
 
 def get_video_metadata(video_path: str):
     try:
-        clip = VideoFileClip(video_path)
-        duration = clip.duration
+        # Get duration using ffprobe
+        cmd = [
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            video_path,
+        ]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        duration = float(result.stdout.strip()) if result.returncode == 0 else None
+
         size_mb = os.path.getsize(video_path) / (1024 * 1024)
-        clip.close()
-        return round(duration, 2), round(size_mb, 2)
+        return round(duration, 2) if duration else None, round(size_mb, 2)
     except Exception as e:
         logger.warning(f"Metadata fetch failed for {video_path}: {e}")
         return None, None
