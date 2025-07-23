@@ -5,6 +5,9 @@ import subprocess
 import json
 from typing import List
 
+import cv2
+import numpy as np
+
 logger = logging.getLogger("TelegramVideoBot")
 
 OUTPUT_DIR = "/home/ubuntu/YouTubebot/processed"
@@ -24,9 +27,49 @@ async def run_ffmpeg_async(cmd: List[str]) -> None:
             err_msg = stderr.decode().strip()
             raise RuntimeError(f"ffmpeg failed with code {proc.returncode}: {err_msg}")
 
+def detect_best_segment(video_path: str, min_duration=20, max_duration=60) -> float:
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError("Failed to open video file for analysis")
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duration = total_frames / fps
+
+    scene_scores = []
+    prev_frame = None
+    changes = []
+
+    for i in range(total_frames):
+        ret, frame = cap.read()
+        if not ret:
+            break
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if prev_frame is not None:
+            diff = cv2.absdiff(gray, prev_frame)
+            changes.append(np.sum(diff))
+        prev_frame = gray
+
+    cap.release()
+
+    if len(changes) < fps * min_duration:
+        return 0
+
+    scores = np.convolve(changes, np.ones(int(fps * min_duration)), mode='valid')
+    best_start_frame = int(np.argmax(scores))
+    best_start_time = best_start_frame / fps
+
+    if best_start_time + max_duration > duration:
+        return max(0, duration - max_duration)
+    return best_start_time
+
 async def edit_video(input_path: str) -> str:
     output_path = os.path.join(OUTPUT_DIR, os.path.basename(input_path))
     logger.info(f"Editing video: {input_path}")
+
+    # Smart trim logic
+    start_time = detect_best_segment(input_path, min_duration=20, max_duration=60)
+    logger.info(f"Selected best segment start time: {start_time:.2f}s")
 
     filter_complex = (
         "[0:v]scale=1080:-1,"
@@ -44,6 +87,7 @@ async def edit_video(input_path: str) -> str:
 
     ffmpeg_cmd = [
         "ffmpeg",
+        "-ss", str(start_time),
         "-i", input_path,
         "-filter_complex", filter_complex,
         "-map", "[v]",
@@ -82,7 +126,7 @@ def is_video_suitable(path: str) -> bool:
         height = int(stream.get("height", 0))
 
         return (
-            20 <= duration <= 60 and
+            15 <= duration <= 90 and
             width >= 640 and
             height >= 360
         )
