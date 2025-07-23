@@ -41,15 +41,13 @@ seen_post_ids = set()
 blacklist_urls = set()
 download_failures = set()
 
-YTDLP_PATH = "/home/ubuntu/YouTubebot/venv/bin/yt-dlp"  # Explicit full path to yt-dlp binary
+YTDLP_PATH = "/home/ubuntu/YouTubebot/venv/bin/yt-dlp"
 
-# Legit user agents to rotate
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Safari/605.1.15",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
 ]
-
 
 def get_reddit_instance():
     return praw.Reddit(
@@ -58,242 +56,165 @@ def get_reddit_instance():
         user_agent=REDDIT_USER_AGENT
     )
 
-
 def run_ffprobe_cmd(cmd: List[str]) -> Optional[str]:
     try:
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=5)
-        if result.returncode == 0:
-            return result.stdout.strip()
-        else:
-            return None
+        return result.stdout.strip() if result.returncode == 0 else None
     except Exception:
         return None
 
-
 def get_video_bitrate(filepath: str) -> Optional[int]:
-    output = run_ffprobe_cmd([
-        "ffprobe", "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=bit_rate",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        filepath
+    out = run_ffprobe_cmd([
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=bit_rate", "-of", "default=noprint_wrappers=1:nokey=1", filepath
     ])
-    if output:
-        try:
-            return int(output)
-        except ValueError:
-            return None
-    return None
-
+    try: return int(out) if out else None
+    except: return None
 
 def get_video_codec(filepath: str) -> Optional[str]:
-    output = run_ffprobe_cmd([
-        "ffprobe", "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=codec_name",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        filepath
+    return run_ffprobe_cmd([
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=codec_name", "-of", "default=noprint_wrappers=1:nokey=1", filepath
     ])
-    return output
-
 
 def get_audio_channels(filepath: str) -> Optional[int]:
-    output = run_ffprobe_cmd([
-        "ffprobe", "-v", "error",
-        "-select_streams", "a:0",
-        "-show_entries", "stream=channels",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        filepath
+    out = run_ffprobe_cmd([
+        "ffprobe", "-v", "error", "-select_streams", "a:0",
+        "-show_entries", "stream=channels", "-of", "default=noprint_wrappers=1:nokey=1", filepath
     ])
-    if output:
-        try:
-            return int(output)
-        except ValueError:
-            return None
-    return None
-
+    try: return int(out) if out else None
+    except: return None
 
 def get_video_fps(filepath: str) -> Optional[float]:
-    output = run_ffprobe_cmd([
-        "ffprobe", "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=r_frame_rate",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        filepath
+    out = run_ffprobe_cmd([
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=r_frame_rate", "-of", "default=noprint_wrappers=1:nokey=1", filepath
     ])
-    if output and '/' in output:
-        num, den = output.split('/')
-        try:
-            fps = float(num) / float(den)
-            return fps
-        except Exception:
-            return None
-    else:
-        try:
-            return float(output)
-        except Exception:
-            return None
+    try:
+        if '/' in out:
+            num, den = out.split('/')
+            return float(num) / float(den)
+        return float(out)
+    except: return None
 
+def get_video_resolution(filepath: str) -> Optional[Tuple[int, int]]:
+    out = run_ffprobe_cmd([
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height", "-of", "csv=s=x:p=0", filepath
+    ])
+    try:
+        w, h = out.split('x')
+        return int(w), int(h)
+    except: return None
 
 def get_video_orientation(filepath: str) -> Optional[str]:
     res = get_video_resolution(filepath)
-    if not res:
-        return None
+    if not res: return None
     w, h = res
     return "vertical" if h > w else "horizontal"
 
-
-def get_video_resolution(filepath: str) -> Optional[Tuple[int, int]]:
-    output = run_ffprobe_cmd([
-        "ffprobe", "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=width,height",
-        "-of", "csv=s=x:p=0", filepath
-    ])
-    if output:
-        try:
-            w, h = output.split('x')
-            return int(w), int(h)
-        except Exception:
-            return None
-    return None
-
-
 def calculate_file_hash(filepath: str, chunk_size=8192) -> str:
-    hash_md5 = hashlib.md5()
+    h = hashlib.md5()
     try:
         with open(filepath, "rb") as f:
-            for chunk in iter(lambda: f.read(chunk_size), b""):
-                hash_md5.update(chunk)
-        return hash_md5.hexdigest()
+            for chunk in iter(lambda: f.read(chunk_size), b""): h.update(chunk)
+        return h.hexdigest()
     except Exception as e:
-        logger.error(f"Failed to hash file {filepath}: {e}")
+        logger.error(f"Hashing failed: {filepath}: {e}")
         return ""
 
-
 async def get_video_duration(filepath: str) -> Optional[float]:
-    cmd = [
-        "ffprobe", "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        filepath
-    ]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
+    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", filepath]
+    proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     stdout, _ = await proc.communicate()
-    try:
-        return float(stdout.strip())
-    except Exception:
-        return None
-
+    try: return float(stdout.strip())
+    except: return None
 
 async def is_video_suitable(filepath: str) -> bool:
     file_hash = calculate_file_hash(filepath)
     if file_hash in seen_hashes:
-        logger.info(f"Duplicate video detected, skipping {filepath}")
+        logger.info(f"Duplicate: {filepath}")
         return False
     seen_hashes.add(file_hash)
 
-    audio_ch = get_audio_channels(filepath)
-    if audio_ch is None or audio_ch < 1:
-        logger.warning(f"No or invalid audio channels in {filepath}")
-        return False
-
     duration = await get_video_duration(filepath)
     if duration is None or not (20 <= duration <= 60):
-        logger.warning(f"Unsuitable duration: {duration} seconds in {filepath}")
+        logger.info(f"Bad duration: {duration} in {filepath}")
         return False
 
-    resolution = get_video_resolution(filepath)
-    if resolution is None:
-        logger.warning(f"Cannot get resolution for {filepath}")
+    audio = get_audio_channels(filepath)
+    if audio is None or audio < 1:
+        logger.info(f"No audio: {filepath}")
         return False
-    w, h = resolution
+
+    res = get_video_resolution(filepath)
+    if not res: return False
+    w, h = res
     if w > 3840 or h > 2160:
-        logger.warning(f"Too high resolution: {w}x{h} in {filepath}")
+        logger.info(f"Too large: {w}x{h} in {filepath}")
         return False
 
-    orientation = get_video_orientation(filepath)
-    if orientation != "vertical":
-        logger.info(f"Skipping non-vertical video: {filepath} orientation={orientation}")
+    if get_video_orientation(filepath) != "vertical":
+        logger.info(f"Not vertical: {filepath}")
         return False
 
     codec = get_video_codec(filepath)
     if codec not in ("h264", "vp9"):
-        logger.info(f"Skipping unsupported codec {codec} in {filepath}")
+        logger.info(f"Bad codec {codec} in {filepath}")
         return False
 
     bitrate = get_video_bitrate(filepath)
-    if bitrate is not None and bitrate < 500_000:
-        logger.info(f"Skipping low bitrate {bitrate} in {filepath}")
+    if bitrate and bitrate < 500_000:
+        logger.info(f"Low bitrate {bitrate} in {filepath}")
         return False
 
     fps = get_video_fps(filepath)
-    if fps is not None and fps < 24:
-        logger.info(f"Skipping low FPS {fps} in {filepath}")
+    if fps and fps < 24:
+        logger.info(f"Low FPS {fps} in {filepath}")
         return False
 
     return True
 
-
 async def async_subreddit_top(subreddit, limit):
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, lambda: list(subreddit.top(time_filter="week", limit=limit)))
-
+    return await asyncio.get_event_loop().run_in_executor(None, lambda: list(subreddit.top(time_filter="week", limit=limit)))
 
 async def head_check_url(url: str, timeout=10) -> Optional[int]:
-    """
-    Send HEAD request to check URL availability and Content-Length
-    Returns size in bytes or None if unavailable.
-    """
     headers = {
         "User-Agent": random.choice(USER_AGENTS),
-        "Referer": "https://v.redd.it/",
+        "Referer": "https://www.reddit.com/",
         "Accept-Language": "en-US,en;q=0.9"
     }
     try:
         async with aiohttp.ClientSession() as session:
             async with session.head(url, headers=headers, timeout=timeout) as resp:
                 if resp.status == 200:
-                    size = resp.headers.get("Content-Length")
-                    return int(size) if size and size.isdigit() else None
+                    sz = resp.headers.get("Content-Length")
+                    return int(sz) if sz and sz.isdigit() else None
                 else:
-                    logger.warning(f"HEAD check failed with status {resp.status} for URL {url}")
+                    logger.warning(f"HEAD {resp.status}: {url}")
                     return None
     except Exception as e:
-        logger.warning(f"HEAD request error for {url}: {e}")
+        logger.warning(f"HEAD failed {url}: {e}")
         return None
-
 
 async def fetch_reddit_videos(limit_per_sub=50) -> List[Tuple[str, str]]:
     reddit = get_reddit_instance()
-    candidates = []
+    results = []
 
-    for subreddit_name in REDDIT_SUBREDDITS:
+    for sub in REDDIT_SUBREDDITS:
         try:
-            subreddit = reddit.subreddit(subreddit_name)
-            thresh = SUBREDDIT_THRESHOLDS.get(subreddit_name, {"score": 2000, "comments": 5000})
-            count = 0
+            posts = await async_subreddit_top(reddit.subreddit(sub), limit_per_sub)
+            thresh = SUBREDDIT_THRESHOLDS.get(sub, {"score": 2000, "comments": 5000})
 
-            posts = await async_subreddit_top(subreddit, limit_per_sub)
             for post in posts:
-                if count >= limit_per_sub:
-                    break
-                if not post.is_video or not hasattr(post, "media"):
+                if not post.is_video or not hasattr(post, "media"): continue
+                vid = post.media.get("reddit_video", {})
+                url = vid.get("fallback_url")
+                if not url or url in blacklist_urls or url in download_failures:
                     continue
-                reddit_video = post.media.get("reddit_video", {})
-                fallback_url = reddit_video.get("fallback_url")
-                if not fallback_url or fallback_url in blacklist_urls or fallback_url in download_failures:
-                    continue
-                
-                # Add dummy query param to bust cache / avoid blocks
-                fallback_url_with_qs = fallback_url + "?x=" + "".join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=6))
 
-                # HEAD check the video URL before downloading
-                size = await head_check_url(fallback_url)
-                if size is None or size > 100_000_000:  # Skip files >100MB or inaccessible
-                    logger.info(f"Skipping large or inaccessible video URL: {fallback_url} Size: {size}")
+                size = await head_check_url(url)
+                if size is None or size > 100_000_000:
                     continue
 
                 if post.score < thresh["score"] or post.num_comments < thresh["comments"]:
@@ -301,104 +222,79 @@ async def fetch_reddit_videos(limit_per_sub=50) -> List[Tuple[str, str]]:
                 if post.id in seen_post_ids:
                     continue
 
-                candidates.append((post.id, post.title))
                 seen_post_ids.add(post.id)
-                count += 1
+                results.append((post.id, post.title))
         except Exception as e:
-            logger.error(f"Error fetching from subreddit {subreddit_name}: {e}")
-
-    return candidates
-
+            logger.error(f"{sub} fetch error: {e}")
+    return results
 
 async def download_reddit_video_with_ytdlp(post_url: str, output_dir: str) -> Optional[str]:
-    filename_template = "%(id)s.%(ext)s"
-    output_template = os.path.join(output_dir, filename_template)
-    user_agent = random.choice(USER_AGENTS)
+    id_ = post_url.rstrip('/').split("/")[-1].split("?")[0]
+    output_path = os.path.join(output_dir, f"{id_}.mp4")
 
-    # Add random dummy query param to URL to prevent caching blocks
-    if "?" not in post_url:
-        post_url = post_url + "?x=" + "".join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=6))
+    user_agent = random.choice(USER_AGENTS)
+    post_url += f"?x={''.join(random.choices('abcdef1234567890', k=6))}"
 
     cmd = (
         f"{YTDLP_PATH} --quiet --no-warnings --merge-output-format mp4 "
-        f"--force-ipv4 "
-        f"--sleep-interval 5 --max-sleep-interval 15 "
-        f"--no-check-certificate "
-        f"--retries 5 --fragment-retries 5 "
+        f"--sleep-interval 5 --max-sleep-interval 15 --retries 5 "
         f"--add-header 'User-Agent: {user_agent}' "
         f"--add-header 'Referer: https://www.reddit.com/' "
-        f"{shlex.quote(post_url)}"
+        f"-o {shlex.quote(output_path)} {shlex.quote(post_url)}"
     )
-    proc = await asyncio.create_subprocess_shell(
-        cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await proc.communicate()
+
+    proc = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    _, stderr = await proc.communicate()
+
     if proc.returncode != 0:
-        err_msg = stderr.decode().strip()
-        logger.error(f"yt-dlp failed: {err_msg}")
-        # Record failure to avoid repeated attempts on same URL
+        logger.error(f"yt-dlp failed: {stderr.decode().strip()}")
         download_failures.add(post_url)
         return None
 
-    id_ = post_url.rstrip('/').split("/")[-1].split("?")[0]
-    candidate_path = os.path.join(output_dir, f"{id_}.mp4")
-    if os.path.exists(candidate_path):
-        return candidate_path
-    logger.error(f"Downloaded file not found: {candidate_path}")
-    return None
-
+    return output_path if os.path.exists(output_path) else None
 
 async def scrape_video() -> Optional[Tuple[str, str]]:
-    videos = await fetch_reddit_videos()
-    if not videos:
-        logger.warning("No suitable Reddit videos found.")
+    vids = await fetch_reddit_videos()
+    if not vids:
+        logger.warning("No Reddit videos available.")
         return None
 
-    random.shuffle(videos)
-    for video_id, title in videos:
-        reddit_url = f"https://redd.it/{video_id}"
-        logger.info(f"Downloading video via yt-dlp from Reddit post {reddit_url}")
-
-        # Throttle 5-15 seconds to avoid rate limits
+    random.shuffle(vids)
+    for vid_id, title in vids:
+        url = f"https://redd.it/{vid_id}"
+        logger.info(f"Trying video: {url}")
         await asyncio.sleep(random.uniform(5, 15))
 
-        video_path = await download_reddit_video_with_ytdlp(reddit_url, DOWNLOAD_DIR)
-        if video_path and await is_video_suitable(video_path):
-            logger.info(f"Video ready: {video_path}")
-            return video_path, title
-        if video_path:
+        path = await download_reddit_video_with_ytdlp(url, DOWNLOAD_DIR)
+        if path and await is_video_suitable(path):
+            return path, title
+        if path:
             try:
-                os.remove(video_path)
-                logger.info(f"Deleted unsuitable video: {video_path}")
+                os.remove(path)
+                logger.info(f"Deleted: {path}")
             except Exception as e:
-                logger.error(f"Failed to delete {video_path}: {e}")
+                logger.error(f"Cleanup failed: {e}")
     return None
 
-
 def cleanup_files(paths: List[str]):
-    for path in paths:
+    for p in paths:
         try:
-            if os.path.exists(path):
-                os.remove(path)
-                logger.info(f"Deleted file: {path}")
+            if os.path.exists(p):
+                os.remove(p)
+                logger.info(f"Deleted file: {p}")
         except Exception as e:
-            logger.error(f"Error deleting {path}: {e}")
-
+            logger.error(f"Delete failed: {e}")
 
 async def check_ip_reputation():
-    import aiohttp
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get("https://ipinfo.io/json") as resp:
                 if resp.status != 200:
-                    logger.warning("Failed to get IP info")
+                    logger.warning("IP info unavailable")
                     return False
-                data = await resp.json()
-                ip = data.get("ip")
-                logger.info(f"Current external IP: {ip}")
+                ip = (await resp.json()).get("ip")
+                logger.info(f"External IP: {ip}")
                 return True
     except Exception as e:
-        logger.warning(f"IP reputation check failed: {e}")
+        logger.warning(f"IP check failed: {e}")
         return False
