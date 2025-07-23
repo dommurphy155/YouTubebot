@@ -35,6 +35,8 @@ REDDIT_CLIENT_ID = os.environ["REDDIT_CLIENT_ID"]
 REDDIT_CLIENT_SECRET = os.environ["REDDIT_CLIENT_SECRET"]
 REDDIT_USER_AGENT = os.environ["REDDIT_USER_AGENT"]
 
+YTDLP_PATH = "/home/ubuntu/YouTubebot/venv/bin/yt-dlp"
+
 seen_hashes = set()
 seen_post_ids = set()
 blacklist_urls = set()
@@ -268,7 +270,7 @@ async def fetch_reddit_videos(limit_per_sub=50) -> List[Tuple[str, str]]:
 async def download_reddit_video_with_ytdlp(post_url: str, output_dir: str) -> Optional[str]:
     filename_template = "%(id)s.%(ext)s"
     output_template = os.path.join(output_dir, filename_template)
-    cmd = f"yt-dlp --quiet --no-warnings --merge-output-format mp4 -o {shlex.quote(output_template)} {shlex.quote(post_url)}"
+    cmd = f"{YTDLP_PATH} --quiet --no-warnings --merge-output-format mp4 -o {shlex.quote(output_template)} {shlex.quote(post_url)}"
     proc = await asyncio.create_subprocess_shell(
         cmd,
         stdout=asyncio.subprocess.PIPE,
