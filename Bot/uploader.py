@@ -1,9 +1,8 @@
 import logging
 import os
-import subprocess
-import json
-from typing import List, Tuple
+from typing import List
 from telegram import Bot, InputFile
+from moviepy.editor import VideoFileClip
 
 logger = logging.getLogger("TelegramVideoBot")
 logging.basicConfig(level=logging.INFO)
@@ -13,19 +12,12 @@ TELEGRAM_CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-def get_video_metadata(video_path: str) -> Tuple[float, float]:
+def get_video_metadata(video_path: str):
     try:
-        cmd = [
-            "ffprobe", "-v", "error",
-            "-select_streams", "v:0",
-            "-show_entries", "format=duration",
-            "-of", "json",
-            video_path
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        info = json.loads(result.stdout)
-        duration = float(info["format"]["duration"])
+        clip = VideoFileClip(video_path)
+        duration = clip.duration
         size_mb = os.path.getsize(video_path) / (1024 * 1024)
+        clip.close()
         return round(duration, 2), round(size_mb, 2)
     except Exception as e:
         logger.warning(f"Metadata fetch failed for {video_path}: {e}")
