@@ -9,44 +9,42 @@ logger = logging.getLogger("TelegramVideoBot")
 DOWNLOAD_DIR = "/home/ubuntu/YouTubebot/downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY")
-if not PEXELS_API_KEY:
-    raise RuntimeError("PEXELS_API_KEY environment variable not set")
-
-HEADERS = {
-    "Authorization": PEXELS_API_KEY,
-}
-
-PEXELS_SEARCH_QUERIES = [
-    "funny animals",
-    "pranks",
-    "epic fails",
-    "people reaction",
-    "street interview",
-    "dancing"
+REDDIT_SUBREDDITS = [
+    "PublicFreakout",
+    "Unexpected",
+    "WatchPeopleDieInside",
+    "NextFuckingLevel",
+    "instant_regret",
+    "holdmyjuicebox",
+    "blursedimages",
+    "IdiotsInCars"
 ]
 
-def build_search_url(query: str, per_page: int = 15, page: int = 1) -> str:
-    q = query.replace(" ", "+")
-    return f"https://api.pexels.com/videos/search?query={q}&per_page={per_page}&page={page}"
+PUSHSHIFT_API_URL = "https://api.pushshift.io/reddit/search/submission/"
 
-async def fetch_pexels_videos():
-    query = random.choice(PEXELS_SEARCH_QUERIES)
-    url = build_search_url(query)
+async def fetch_reddit_videos(subreddit: str, limit: int = 50):
+    params = {
+        "subreddit": subreddit,
+        "sort": "desc",
+        "sort_type": "score",
+        "after": "7d",
+        "is_video": "true",
+        "size": limit
+    }
     timeout = aiohttp.ClientTimeout(total=10)
-    async with aiohttp.ClientSession(headers=HEADERS, timeout=timeout) as session:
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         try:
-            async with session.get(url) as resp:
+            async with session.get(PUSHSHIFT_API_URL, params=params) as resp:
                 if resp.status != 200:
-                    logger.error(f"Pexels API error: {resp.status} | Query: {query}")
+                    logger.error(f"Pushshift API error: {resp.status} | Subreddit: {subreddit}")
                     return []
                 data = await resp.json()
-                return data.get("videos", [])
+                return data.get("data", [])
         except asyncio.TimeoutError:
-            logger.error("Pexels API request timed out")
+            logger.error(f"Pushshift API request timed out for subreddit {subreddit}")
             return []
         except Exception as e:
-            logger.error(f"Pexels API request failed: {e}")
+            logger.error(f"Pushshift API request failed for subreddit {subreddit}: {e}")
             return []
 
 async def download_video(url: str, filename: str) -> str | None:
@@ -70,7 +68,6 @@ async def download_video(url: str, filename: str) -> str | None:
         return None
 
 async def has_audio_stream(filepath: str) -> bool:
-    """Check if video file has an audio stream using ffprobe."""
     cmd = [
         "ffprobe",
         "-v", "error",
@@ -91,7 +88,6 @@ async def has_audio_stream(filepath: str) -> bool:
     return has_audio
 
 async def get_video_duration(filepath: str) -> float | None:
-    """Get video duration in seconds."""
     cmd = [
         "ffprobe",
         "-v", "error",
@@ -113,7 +109,6 @@ async def get_video_duration(filepath: str) -> float | None:
         return None
 
 async def get_video_resolution(filepath: str) -> tuple[int, int] | None:
-    """Get video resolution (width, height)."""
     cmd = [
         "ffprobe",
         "-v", "error",
@@ -136,15 +131,12 @@ async def get_video_resolution(filepath: str) -> tuple[int, int] | None:
         return None
 
 async def is_video_suitable(filepath: str) -> bool:
-    # Check audio presence
     if not await has_audio_stream(filepath):
         return False
-    # Check duration limits (>=5s)
     duration = await get_video_duration(filepath)
-    if duration is None or duration < 5:
-        logger.warning(f"Video too short or duration unknown: {filepath}")
+    if duration is None or not (20 <= duration <= 60):
+        logger.warning(f"Video duration not in range 20-60s or unknown: {filepath}")
         return False
-    # Check resolution cap (max 3840x2160 for 4K)
     resolution = await get_video_resolution(filepath)
     if resolution is None:
         return False
@@ -155,52 +147,52 @@ async def is_video_suitable(filepath: str) -> bool:
     return True
 
 async def scrape_video() -> str | None:
-    videos = await fetch_pexels_videos()
-    if not videos:
-        logger.info("No videos fetched from Pexels")
+    # Aggregate videos from all subreddits
+    all_videos = []
+    for subreddit in REDDIT_SUBREDDITS:
+        vids = await fetch_reddit_videos(subreddit)
+        all_videos.extend(vids)
+
+    if not all_videos:
+        logger.info("No videos fetched from Reddit")
         return None
 
-    # Filter videos by duration 10–60s
-    def is_suitable_duration(video):
-        duration = video.get("duration", 0)
-        return 10 <= duration <= 60
+    # Filter by score and comments thresholds
+    def is_viral(video):
+        score = video.get("score", 0)
+        comments = video.get("num_comments", 0)
+        is_vid = video.get("is_video", False)
+        return is_vid and score >= 12000 and comments >= 5000
 
-    candidates = list(filter(is_suitable_duration, videos))
+    viral_videos = list(filter(is_viral, all_videos))
+    if not viral_videos:
+        logger.warning("No viral videos found based on score/comments")
+        return None
+
+    # Pick a random viral video with Reddit native video url
+    candidates = []
+    for video in viral_videos:
+        media = video.get("media")
+        if not media:
+            continue
+        reddit_video = media.get("reddit_video")
+        if reddit_video:
+            fallback_url = reddit_video.get("fallback_url")
+            if fallback_url:
+                candidates.append((video, fallback_url))
+
     if not candidates:
-        logger.warning("No suitable-duration videos found")
+        logger.warning("No Reddit native video URLs found")
         return None
 
-    # Pick random candidate and best quality mp4 file
-    video = random.choice(candidates)
-    video_files = video.get("video_files", [])
-    if not video_files:
-        logger.warning("No video files found for selected Pexels video")
-        return None
-
-    mp4_files = [f for f in video_files if f.get("file_type") == "video/mp4"]
-    if not mp4_files:
-        logger.warning("No mp4 files found for selected Pexels video")
-        return None
-
-    def score(f):
-        size_mb = f.get("file_size", 1) / (1024 * 1024)
-        return f.get("width", 0) / (size_mb + 1)
-
-    best_file = max(mp4_files, key=score)
-
-    video_url = best_file.get("link")
-    video_id = video.get("id")
-
-    if not video_url or not video_id:
-        logger.warning("Invalid video data from Pexels")
-        return None
-
+    video, video_url = random.choice(candidates)
+    video_id = video.get("id") or video.get("name") or str(random.randint(1000000, 9999999))
     filename = f"{video_id}.mp4"
-    logger.info(f"Downloading Pexels video {video_id} from {video_url}")
+
+    logger.info(f"Downloading Reddit video {video_id} from {video_url}")
     video_path = await download_video(video_url, filename)
 
     if video_path:
-        # Check suitability before returning
         if await is_video_suitable(video_path):
             logger.info(f"Downloaded video suitable: {video_path}")
             return video_path
@@ -212,7 +204,7 @@ async def scrape_video() -> str | None:
                 logger.error(f"Failed to delete unsuitable video {video_path}: {e}")
             return None
     else:
-        logger.warning("Failed to download video from Pexels")
+        logger.warning("Failed to download video from Reddit")
         return None
 
 def cleanup_files(paths: list[str]):
