@@ -3,6 +3,7 @@ import logging
 import signal
 import sys
 import os
+import subprocess
 import random
 
 import scraper
@@ -21,16 +22,22 @@ running = True
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-    logger.critical("Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID in environment. Exiting.")
-    sys.exit(1)
-
+YTDLP_PATH = "/home/ubuntu/YouTubebot/venv/bin/yt-dlp"
 
 def handle_shutdown(signum, frame):
     global running
     running = False
     logger.info("Shutdown signal received.")
 
+def update_ytdlp():
+    try:
+        result = subprocess.run([YTDLP_PATH, "-U"], capture_output=True, text=True, timeout=60)
+        if result.returncode == 0:
+            logger.info("yt-dlp updated successfully.")
+        else:
+            logger.warning(f"yt-dlp update failed: {result.stderr.strip()}")
+    except Exception as e:
+        logger.error(f"yt-dlp update exception: {e}")
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_chat.id) != TELEGRAM_CHAT_ID:
@@ -51,7 +58,6 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in /status command: {e}")
 
-
 async def start_telegram_bot():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("status", status_command))
@@ -60,53 +66,35 @@ async def start_telegram_bot():
     logger.info("Telegram bot started.")
     return app
 
-
 async def stop_telegram_bot(app):
     await app.stop()
     await app.shutdown()
     logger.info("Telegram bot stopped.")
 
-
 async def main_loop():
+    update_ytdlp()  # Auto-update yt-dlp on startup
+
     app = await start_telegram_bot()
-    backoff_seconds = 10  # Initial backoff on failure
     try:
         while running:
             try:
                 result = await scraper.scrape_video()
                 if not result:
-                    logger.info("No suitable video found; sleeping longer before retry.")
-                    await asyncio.sleep(60 + random.randint(5, 15))
+                    await asyncio.sleep(60 + random.uniform(5, 15))  # add jitter to reduce blocking
                     continue
-
-                video_path, title = result
-                logger.info(f"Processing video: {video_path} - Title: {title}")
+                video_path, _title = result  # unpack tuple, discard title if unused
 
                 edited_path = await editor.edit_video(video_path)
-                if not edited_path:
-                    logger.error("Video editing failed, deleting original video.")
-                    scraper.cleanup_files([video_path])
-                    await asyncio.sleep(backoff_seconds)
-                    continue
-
-                upload_success = await uploader.upload_video(edited_path)
-                if not upload_success:
-                    logger.error("Video upload failed, deleting files.")
-                    scraper.cleanup_files([video_path, edited_path])
-                    await asyncio.sleep(backoff_seconds)
-                    continue
-
+                await uploader.upload_video(edited_path)
                 scraper.cleanup_files([video_path, edited_path])
-                backoff_seconds = 10  # reset backoff after success
-                await asyncio.sleep(10 + random.randint(0, 10))  # jittered sleep to avoid pattern
 
+                # Random delay 10-30 seconds to avoid triggering Reddit rate limits
+                await asyncio.sleep(random.uniform(10, 30))
             except Exception as e:
-                logger.error(f"Error in main loop: {e}", exc_info=True)
-                await asyncio.sleep(backoff_seconds)
-                backoff_seconds = min(backoff_seconds * 2, 300)  # exponential backoff cap at 5 minutes
+                logger.error(f"Error in main loop: {e}")
+                await asyncio.sleep(30)  # pause on error before retry
     finally:
         await stop_telegram_bot(app)
-
 
 if __name__ == "__main__":
     signal.signal(signal.SIGTERM, handle_shutdown)
@@ -115,5 +103,5 @@ if __name__ == "__main__":
     try:
         asyncio.run(main_loop())
     except Exception as e:
-        logger.error(f"Bot crashed: {e}", exc_info=True)
+        logger.error(f"Bot crashed: {e}")
         sys.exit(1)
