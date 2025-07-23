@@ -5,10 +5,14 @@ import asyncio
 import logging
 import logging.handlers
 import signal
+import datetime
 from typing import List
 
 OUTPUT_DIR = os.path.join(os.getcwd(), "processed")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+LOGS_DIR = os.path.join(os.getcwd(), "logs")
+os.makedirs(LOGS_DIR, exist_ok=True)
 
 # === LOGGING SETUP ===
 logger = logging.getLogger("TelegramVideoBot")
@@ -47,7 +51,7 @@ def _handle_shutdown():
 for sig in (signal.SIGINT, signal.SIGTERM):
     signal.signal(sig, lambda *_: _handle_shutdown())
 
-# === ASYNC FFMPEG WRAPPER (FIXED HERE) ===
+# === ASYNC FFMPEG WRAPPER (IMPROVED TO PROPAGATE STDERR) ===
 _ffmpeg_semaphore = asyncio.Semaphore(1)
 
 async def run_ffmpeg_async(cmd: List[str]) -> None:
@@ -59,8 +63,9 @@ async def run_ffmpeg_async(cmd: List[str]) -> None:
         )
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
-            logger.error("FFmpeg stderr:\n" + stderr.decode().strip())
-            raise RuntimeError(f"ffmpeg failed with exit code {proc.returncode}")
+            err_text = stderr.decode().strip()
+            logger.error("FFmpeg stderr:\n" + err_text)
+            raise RuntimeError(f"ffmpeg failed with exit code {proc.returncode}\n{err_text}")
 
 # === VIDEO SEGMENT ANALYSIS ===
 def detect_best_segment(video_path: str, max_duration: int = 45) -> float:
@@ -112,7 +117,7 @@ def get_video_duration(video_path: str) -> float:
         logger.warning(f"Failed to get video duration: {e}")
         return 0.0
 
-# === MAIN EDIT FUNCTION (UNCHANGED LOGIC, NOW USES IMPROVED RUN) ===
+# === MAIN EDIT FUNCTION (NOW WITH ERROR LOG FILE SAVE) ===
 async def edit_video(input_path: str) -> str:
     output_path = os.path.join(OUTPUT_DIR, os.path.basename(input_path))
     total_duration = get_video_duration(input_path)
@@ -186,11 +191,24 @@ async def edit_video(input_path: str) -> str:
         await asyncio.wait_for(run_ffmpeg_async(ffmpeg_cmd), timeout=150)
         logger.info(f"Edited video saved to: {output_path}")
         return output_path
+
     except Exception as e:
-        logger.error(f"Edit failed: {e}")
+        # Save ffmpeg stderr and error info to a timestamped file
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        error_log_path = os.path.join(LOGS_DIR, f"ffmpeg_error_{timestamp}.log")
+
+        error_text = str(e)
+        with open(error_log_path, "w") as f:
+            f.write(f"Edit failed for video: {input_path}\n")
+            f.write(error_text)
+
+        logger.error(f"Edit failed: {error_text}")
+        logger.info(f"FFmpeg error log saved to {error_log_path}")
+
         if os.path.exists(output_path):
             os.remove(output_path)
             logger.info(f"Deleted incomplete file: {output_path}")
+
         raise
 
 # === RELAXED SANITY CHECK ===
