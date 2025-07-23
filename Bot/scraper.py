@@ -8,6 +8,7 @@ from typing import Optional, Tuple, List
 import praw
 import shlex
 import subprocess
+import aiohttp
 
 logger = logging.getLogger("TelegramVideoBot")
 logging.basicConfig(level=logging.INFO)
@@ -38,8 +39,17 @@ REDDIT_USER_AGENT = os.environ["REDDIT_USER_AGENT"]
 seen_hashes = set()
 seen_post_ids = set()
 blacklist_urls = set()
+download_failures = set()
 
 YTDLP_PATH = "/home/ubuntu/YouTubebot/venv/bin/yt-dlp"  # Explicit full path to yt-dlp binary
+
+# Legit user agents to rotate
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+]
+
 
 def get_reddit_instance():
     return praw.Reddit(
@@ -232,6 +242,30 @@ async def async_subreddit_top(subreddit, limit):
     return await loop.run_in_executor(None, lambda: list(subreddit.top(time_filter="week", limit=limit)))
 
 
+async def head_check_url(url: str, timeout=10) -> Optional[int]:
+    """
+    Send HEAD request to check URL availability and Content-Length
+    Returns size in bytes or None if unavailable.
+    """
+    headers = {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Referer": "https://v.redd.it/",
+        "Accept-Language": "en-US,en;q=0.9"
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.head(url, headers=headers, timeout=timeout) as resp:
+                if resp.status == 200:
+                    size = resp.headers.get("Content-Length")
+                    return int(size) if size and size.isdigit() else None
+                else:
+                    logger.warning(f"HEAD check failed with status {resp.status} for URL {url}")
+                    return None
+    except Exception as e:
+        logger.warning(f"HEAD request error for {url}: {e}")
+        return None
+
+
 async def fetch_reddit_videos(limit_per_sub=50) -> List[Tuple[str, str]]:
     reddit = get_reddit_instance()
     candidates = []
@@ -250,8 +284,18 @@ async def fetch_reddit_videos(limit_per_sub=50) -> List[Tuple[str, str]]:
                     continue
                 reddit_video = post.media.get("reddit_video", {})
                 fallback_url = reddit_video.get("fallback_url")
-                if not fallback_url or fallback_url in blacklist_urls:
+                if not fallback_url or fallback_url in blacklist_urls or fallback_url in download_failures:
                     continue
+                
+                # Add dummy query param to bust cache / avoid blocks
+                fallback_url_with_qs = fallback_url + "?x=" + "".join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=6))
+
+                # HEAD check the video URL before downloading
+                size = await head_check_url(fallback_url)
+                if size is None or size > 100_000_000:  # Skip files >100MB or inaccessible
+                    logger.info(f"Skipping large or inaccessible video URL: {fallback_url} Size: {size}")
+                    continue
+
                 if post.score < thresh["score"] or post.num_comments < thresh["comments"]:
                     continue
                 if post.id in seen_post_ids:
@@ -269,12 +313,20 @@ async def fetch_reddit_videos(limit_per_sub=50) -> List[Tuple[str, str]]:
 async def download_reddit_video_with_ytdlp(post_url: str, output_dir: str) -> Optional[str]:
     filename_template = "%(id)s.%(ext)s"
     output_template = os.path.join(output_dir, filename_template)
-    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+    user_agent = random.choice(USER_AGENTS)
+
+    # Add random dummy query param to URL to prevent caching blocks
+    if "?" not in post_url:
+        post_url = post_url + "?x=" + "".join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=6))
+
     cmd = (
         f"{YTDLP_PATH} --quiet --no-warnings --merge-output-format mp4 "
-        f"-o {shlex.quote(output_template)} "
-        f"--add-header 'User-Agent:{user_agent}' "
-        f"--add-header 'Referer:https://www.reddit.com/' "
+        f"--force-ipv4 "
+        f"--sleep-interval 5 --max-sleep-interval 15 "
+        f"--no-check-certificate "
+        f"--retries 5 --fragment-retries 5 "
+        f"--add-header 'User-Agent: {user_agent}' "
+        f"--add-header 'Referer: https://www.reddit.com/' "
         f"{shlex.quote(post_url)}"
     )
     proc = await asyncio.create_subprocess_shell(
@@ -284,10 +336,13 @@ async def download_reddit_video_with_ytdlp(post_url: str, output_dir: str) -> Op
     )
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
-        logger.error(f"yt-dlp failed: {stderr.decode().strip()}")
+        err_msg = stderr.decode().strip()
+        logger.error(f"yt-dlp failed: {err_msg}")
+        # Record failure to avoid repeated attempts on same URL
+        download_failures.add(post_url)
         return None
 
-    id_ = post_url.rstrip('/').split("/")[-1]
+    id_ = post_url.rstrip('/').split("/")[-1].split("?")[0]
     candidate_path = os.path.join(output_dir, f"{id_}.mp4")
     if os.path.exists(candidate_path):
         return candidate_path
@@ -305,6 +360,10 @@ async def scrape_video() -> Optional[Tuple[str, str]]:
     for video_id, title in videos:
         reddit_url = f"https://redd.it/{video_id}"
         logger.info(f"Downloading video via yt-dlp from Reddit post {reddit_url}")
+
+        # Throttle 5-15 seconds to avoid rate limits
+        await asyncio.sleep(random.uniform(5, 15))
+
         video_path = await download_reddit_video_with_ytdlp(reddit_url, DOWNLOAD_DIR)
         if video_path and await is_video_suitable(video_path):
             logger.info(f"Video ready: {video_path}")
@@ -326,3 +385,24 @@ def cleanup_files(paths: List[str]):
                 logger.info(f"Deleted file: {path}")
         except Exception as e:
             logger.error(f"Error deleting {path}: {e}")
+
+# Bonus: Add a simple IP reputation check and restart trigger (optional)
+
+async def check_ip_reputation():
+    # Dummy example, replace with your IP reputation check or blacklist API
+    import aiohttp
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get("https://ipinfo.io/json") as resp:
+                if resp.status != 200:
+                    logger.warning("Failed to get IP info")
+                    return False
+                data = await resp.json()
+                ip = data.get("ip")
+                # Add blacklist check here with IP (external API)
+                # If flagged, log and consider restart/reconnect logic
+                logger.info(f"Current external IP: {ip}")
+                return True
+    except Exception as e:
+        logger.warning(f"IP reputation check failed: {e}")
+        return False
