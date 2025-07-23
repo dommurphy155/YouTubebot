@@ -9,6 +9,7 @@ from typing import Optional, Tuple, List
 import praw
 
 logger = logging.getLogger("TelegramVideoBot")
+logging.basicConfig(level=logging.INFO)
 
 DOWNLOAD_DIR = "/home/ubuntu/YouTubebot/downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
