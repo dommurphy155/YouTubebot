@@ -157,7 +157,7 @@ def calculate_file_hash(filepath: str, chunk_size=8192) -> str:
         logger.error(f"Failed to hash file {filepath}: {e}")
         return ""
 
-async def download_video(url: str, filename: str) -> Optional[str]:
+async def download_file(url: str, filename: str) -> Optional[str]:
     if url in blacklist_urls:
         logger.info(f"URL blacklisted, skipping: {url}")
         return None
@@ -167,7 +167,7 @@ async def download_video(url: str, filename: str) -> Optional[str]:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url) as resp:
                 if resp.status != 200:
-                    logger.error(f"Failed to download video: {resp.status} from {url}")
+                    logger.error(f"Failed to download file: {resp.status} from {url}")
                     blacklist_urls.add(url)
                     return None
                 with open(path, "wb") as f:
@@ -175,9 +175,45 @@ async def download_video(url: str, filename: str) -> Optional[str]:
                         f.write(chunk)
         return path
     except Exception as e:
-        logger.error(f"Error downloading video from {url}: {e}")
+        logger.error(f"Error downloading file from {url}: {e}")
         blacklist_urls.add(url)
         return None
+
+async def download_and_merge(video_url: str, audio_url: str, output_path: str) -> Optional[str]:
+    video_path = output_path + "_video.mp4"
+    audio_path = output_path + "_audio.mp4"
+
+    video_dl = await download_file(video_url, os.path.basename(video_path))
+    if not video_dl:
+        return None
+    audio_dl = await download_file(audio_url, os.path.basename(audio_path))
+    if not audio_dl:
+        # If no audio, delete video and return None
+        os.remove(video_path)
+        return None
+
+    # Merge video + audio
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", video_path,
+        "-i", audio_path,
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-strict", "experimental",
+        output_path
+    ]
+    proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        logger.error(f"FFmpeg merge failed: {stderr.decode()}")
+        os.remove(video_path)
+        os.remove(audio_path)
+        return None
+
+    # Cleanup separate files
+    os.remove(video_path)
+    os.remove(audio_path)
+    return output_path
 
 async def is_video_suitable(filepath: str) -> bool:
     # Check deduplication
@@ -235,14 +271,13 @@ async def is_video_suitable(filepath: str) -> bool:
 
     return True
 
-async def fetch_reddit_videos(limit_per_sub=50) -> List[Tuple[str, str, str]]:
+async def fetch_reddit_videos(limit_per_sub=50) -> List[Tuple[str, str, str, str]]:
     reddit = get_reddit_instance()
     candidates = []
 
     for subreddit_name in REDDIT_SUBREDDITS:
         try:
             subreddit = reddit.subreddit(subreddit_name)
-            # Dynamic thresholds fallback
             thresh = SUBREDDIT_THRESHOLDS.get(subreddit_name, {"score": 2000, "comments": 5000})
             count = 0
 
@@ -253,16 +288,18 @@ async def fetch_reddit_videos(limit_per_sub=50) -> List[Tuple[str, str, str]]:
                     continue
                 reddit_video = post.media.get("reddit_video", {})
                 fallback_url = reddit_video.get("fallback_url")
-                if not fallback_url or fallback_url in blacklist_urls:
+                dash_url = reddit_video.get("dash_url")
+
+                if not fallback_url or not dash_url or fallback_url in blacklist_urls:
                     continue
-                # Filter by score/comments dynamically
                 if post.score < thresh["score"] or post.num_comments < thresh["comments"]:
                     continue
-                # Avoid duplicated posts
                 if post.id in seen_post_ids:
                     continue
 
-                candidates.append((post.id, fallback_url, post.title))
+                # Audio URL from dash_url (replace last segment with DASH_audio.mp4)
+                audio_url = dash_url.rsplit('/', 1)[0] + "/DASH_audio.mp4"
+                candidates.append((post.id, fallback_url, audio_url, post.title))
                 seen_post_ids.add(post.id)
                 count += 1
         except Exception as e:
@@ -277,19 +314,20 @@ async def scrape_video() -> Optional[Tuple[str, str]]:
         return None
 
     random.shuffle(videos)
-    for video_id, video_url, title in videos:
+    for video_id, video_url, audio_url, title in videos:
         filename = f"{video_id}.mp4"
-        logger.info(f"Attempting download of {video_id} from {video_url}")
-        video_path = await download_video(video_url, filename)
-        if video_path and await is_video_suitable(video_path):
-            logger.info(f"Video ready: {video_path}")
-            return video_path, title
-        if video_path:
+        output_path = os.path.join(DOWNLOAD_DIR, filename)
+        logger.info(f"Attempting download+merge of {video_id} from {video_url} and audio {audio_url}")
+        merged_path = await download_and_merge(video_url, audio_url, output_path)
+        if merged_path and await is_video_suitable(merged_path):
+            logger.info(f"Video ready: {merged_path}")
+            return merged_path, title
+        if merged_path:
             try:
-                os.remove(video_path)
-                logger.info(f"Deleted unsuitable video: {video_path}")
+                os.remove(merged_path)
+                logger.info(f"Deleted unsuitable video: {merged_path}")
             except Exception as e:
-                logger.error(f"Failed to delete {video_path}: {e}")
+                logger.error(f"Failed to delete {merged_path}: {e}")
     return None
 
 def cleanup_files(paths: List[str]):
