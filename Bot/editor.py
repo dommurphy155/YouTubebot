@@ -72,6 +72,7 @@ def detect_best_segment(video_path: str, max_duration: int = 45) -> float:
             video_path
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
         total_duration = float(result.stdout.strip())
+        # Center segment if video longer than max_duration, else start at 0
         return max(0.0, round((total_duration - max_duration) / 2, 2)) if total_duration > max_duration else 0.0
     except Exception as e:
         logger.warning(f"Failed to detect segment: {e}")
@@ -90,13 +91,40 @@ def has_audio_stream(video_path: str) -> bool:
     except:
         return False
 
-# === MAIN EDIT FUNCTION ===
+# === EXTENDED VIDEO SANITY CHECK ===
+def is_video_corrupted(video_path: str) -> bool:
+    # Use ffmpeg to detect if video can be decoded without errors
+    # Return True if corrupted (bad), False if good
+    cmd = [
+        "ffmpeg", "-v", "error", "-i", video_path,
+        "-f", "null", "-"
+    ]
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    return bool(result.stderr.strip())  # Any error output means likely corrupted
+
+def get_video_duration(video_path: str) -> float:
+    try:
+        result = subprocess.run([
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            video_path
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+        return float(result.stdout.strip())
+    except Exception as e:
+        logger.warning(f"Failed to get video duration: {e}")
+        return 0.0
+
+# === MAIN EDIT FUNCTION WITH IMPROVED FLEXIBILITY ===
 async def edit_video(input_path: str) -> str:
     output_path = os.path.join(OUTPUT_DIR, os.path.basename(input_path))
+    total_duration = get_video_duration(input_path)
     start_time = detect_best_segment(input_path)
+    
+    logger.info(f"Editing video: {input_path} (start={start_time}s, total_duration={total_duration}s)")
 
-    logger.info(f"Editing video: {input_path} (start={start_time}s)")
-
+    # Force scale to 1080 width, keep aspect ratio, crop to 1080x1920 vertically centered
+    # Add color correction, unsharp, fade-in/out, frame interpolation for smoothness
     common_vfilters = (
         "scale=1080:-1,"
         "crop=1080:1920:(in_w-1080)/2:(in_h-1920)/2,"
@@ -107,6 +135,19 @@ async def edit_video(input_path: str) -> str:
     )
 
     has_audio = has_audio_stream(input_path)
+    
+    # Video duration under 15s: loop or slow down to reach 15s minimum
+    min_duration = 15
+    target_duration = min(45, max(min_duration, total_duration))
+    ffmpeg_extra = []
+    if total_duration < min_duration:
+        # Loop input video to reach min_duration
+        loop_count = int(min_duration // total_duration) + 1
+        ffmpeg_extra.extend([
+            "-stream_loop", str(loop_count - 1)
+        ])
+        target_duration = min_duration
+
     if has_audio:
         filters = (
             f"[0:v]{common_vfilters}[v];"
@@ -114,29 +155,43 @@ async def edit_video(input_path: str) -> str:
             f"stop_periods=-1:stop_silence=0.1:stop_threshold=-50dB[aout]"
         )
         maps = ["-map", "[v]", "-map", "[aout]"]
+        acodec = "aac"
+        audio_bitrate = "128k"
     else:
         filters = f"[0:v]{common_vfilters}[v]"
         maps = ["-map", "[v]"]
+        acodec = "none"
+        audio_bitrate = None
 
     ffmpeg_cmd = [
-        "ffmpeg", "-ss", str(start_time), "-i", input_path,
+        "ffmpeg",
+        *ffmpeg_extra,
+        "-ss", str(start_time),
+        "-i", input_path,
         "-filter_complex", filters,
         *maps,
-        "-t", "45",
+        "-t", str(target_duration),
         "-vcodec", "libx264",
         "-preset", "fast",
         "-crf", "25",
-        "-acodec", "aac" if has_audio else "-an",
-        "-b:a", "128k" if has_audio else None,
         "-pix_fmt", "yuv420p",
         "-movflags", "faststart",
         "-threads", "2",
         "-y", output_path
     ]
+    if has_audio:
+        ffmpeg_cmd += ["-acodec", acodec, "-b:a", audio_bitrate]
+    else:
+        ffmpeg_cmd += ["-an"]
+
     ffmpeg_cmd = [x for x in ffmpeg_cmd if x is not None]
 
     try:
-        await asyncio.wait_for(run_ffmpeg_async(ffmpeg_cmd), timeout=120)
+        # Double-check video is not corrupted before editing
+        if is_video_corrupted(input_path):
+            raise RuntimeError("Input video is corrupted or unreadable")
+
+        await asyncio.wait_for(run_ffmpeg_async(ffmpeg_cmd), timeout=150)
         logger.info(f"Edited video saved to: {output_path}")
         return output_path
     except Exception as e:
@@ -146,9 +201,14 @@ async def edit_video(input_path: str) -> str:
             logger.info(f"Deleted incomplete file: {output_path}")
         raise
 
-# === SANITY CHECK ===
+# === RELAXED SANITY CHECK ===
 def is_video_suitable(path: str) -> bool:
     try:
+        # Just check video is readable and has minimal resolution + duration
+        if is_video_corrupted(path):
+            logger.warning("Video rejected: corrupted")
+            return False
+
         result = subprocess.run([
             "ffprobe", "-v", "error",
             "-select_streams", "v:0",
@@ -158,9 +218,22 @@ def is_video_suitable(path: str) -> bool:
         data = json.loads(result.stdout)["streams"][0]
         width, height = int(data["width"]), int(data["height"])
         duration = float(data["duration"])
-        return 15 <= duration <= 90 and width >= 640 and height >= 360
+
+        if width < 640 or height < 360:
+            logger.warning(f"Video rejected: resolution too low {width}x{height}")
+            return False
+
+        if duration < 1:
+            logger.warning(f"Video rejected: duration too short {duration}s")
+            return False
+
+        # Accept any duration up to 90s — trimming done in editor
+        if duration > 90:
+            logger.info(f"Video accepted but will be trimmed: duration {duration}s")
+        
+        return True
     except Exception as e:
-        logger.warning(f"Video check failed: {e}")
+        logger.warning(f"Video suitability check failed: {e}")
         return False
 
 # === OPTIONAL: SHUTDOWN AWAITER FOR CLEAN EXITS ===
