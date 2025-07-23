@@ -189,7 +189,10 @@ async def download_and_merge(video_url: str, audio_url: str, output_path: str) -
     audio_dl = await download_file(audio_url, os.path.basename(audio_path))
     if not audio_dl:
         # If no audio, delete video and return None
-        os.remove(video_path)
+        try:
+            os.remove(video_path)
+        except Exception:
+            pass
         return None
 
     # Merge video + audio
@@ -206,13 +209,25 @@ async def download_and_merge(video_url: str, audio_url: str, output_path: str) -
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
         logger.error(f"FFmpeg merge failed: {stderr.decode()}")
-        os.remove(video_path)
-        os.remove(audio_path)
+        try:
+            os.remove(video_path)
+        except Exception:
+            pass
+        try:
+            os.remove(audio_path)
+        except Exception:
+            pass
         return None
 
     # Cleanup separate files
-    os.remove(video_path)
-    os.remove(audio_path)
+    try:
+        os.remove(video_path)
+    except Exception:
+        pass
+    try:
+        os.remove(audio_path)
+    except Exception:
+        pass
     return output_path
 
 async def is_video_suitable(filepath: str) -> bool:
