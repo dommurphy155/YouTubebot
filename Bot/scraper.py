@@ -1,11 +1,9 @@
 import os
-import asyncio
-import aiohttp
 import logging
 import random
 from datetime import datetime, timedelta
-
-import asyncpraw
+import praw
+import requests
 
 logger = logging.getLogger("TelegramVideoBot")
 
@@ -25,23 +23,20 @@ REDDIT_SUBREDDITS = [
 
 REDDIT_CLIENT_ID = os.environ["REDDIT_CLIENT_ID"]
 REDDIT_CLIENT_SECRET = os.environ["REDDIT_CLIENT_SECRET"]
-REDDIT_USER_AGENT = os.environ["REDDIT_USER_AGENT"]
+REDDIT_USER_AGENT = os.environ.get("REDDIT_USER_AGENT", "RedditVideoScraperBot/1.0 by u/No_Education_9299")
 
-def get_reddit_instance():
-    return asyncpraw.Reddit(
-        client_id=REDDIT_CLIENT_ID,
-        client_secret=REDDIT_CLIENT_SECRET,
-        user_agent=REDDIT_USER_AGENT
-    )
+reddit = praw.Reddit(
+    client_id=REDDIT_CLIENT_ID,
+    client_secret=REDDIT_CLIENT_SECRET,
+    user_agent=REDDIT_USER_AGENT,
+)
 
-async def fetch_reddit_videos(limit_per_sub=50):
-    reddit = get_reddit_instance()
+def fetch_reddit_videos(limit_per_sub=50):
     candidates = []
-
     for subreddit_name in REDDIT_SUBREDDITS:
         try:
-            subreddit = await reddit.subreddit(subreddit_name)
-            async for post in subreddit.top(time_filter="week", limit=limit_per_sub):
+            subreddit = reddit.subreddit(subreddit_name)
+            for post in subreddit.top(time_filter="week", limit=limit_per_sub):
                 if not post.is_video or not hasattr(post, "media"):
                     continue
                 reddit_video = post.media.get("reddit_video", {})
@@ -50,26 +45,24 @@ async def fetch_reddit_videos(limit_per_sub=50):
                     candidates.append((post.id, fallback_url))
         except Exception as e:
             logger.error(f"Error fetching from subreddit {subreddit_name}: {e}")
-
-    await reddit.close()
     return candidates
 
-async def download_video(url: str, filename: str) -> str | None:
+def download_video(url: str, filename: str) -> str | None:
     path = os.path.join(DOWNLOAD_DIR, filename)
     try:
-        timeout = aiohttp.ClientTimeout(total=60)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    logger.error(f"Failed to download video: {resp.status}")
-                    return None
-                with open(path, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(8192):
-                        f.write(chunk)
+        resp = requests.get(url, timeout=60, stream=True)
+        if resp.status_code != 200:
+            logger.error(f"Failed to download video: {resp.status_code}")
+            return None
+        with open(path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                f.write(chunk)
         return path
     except Exception as e:
         logger.error(f"Error downloading video from {url}: {e}")
         return None
+
+import asyncio
 
 async def has_audio_stream(filepath: str) -> bool:
     cmd = [
@@ -139,7 +132,7 @@ async def is_video_suitable(filepath: str) -> bool:
     return True
 
 async def scrape_video() -> str | None:
-    videos = await fetch_reddit_videos()
+    videos = fetch_reddit_videos()
     if not videos:
         logger.warning("No suitable Reddit videos found.")
         return None
@@ -148,7 +141,7 @@ async def scrape_video() -> str | None:
     for video_id, video_url in videos:
         filename = f"{video_id}.mp4"
         logger.info(f"Attempting download of {video_id} from {video_url}")
-        video_path = await download_video(video_url, filename)
+        video_path = download_video(video_url, filename)
         if video_path and await is_video_suitable(video_path):
             logger.info(f"Video ready: {video_path}")
             return video_path
