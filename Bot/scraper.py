@@ -39,12 +39,14 @@ seen_hashes = set()
 seen_post_ids = set()
 blacklist_urls = set()
 
+
 def get_reddit_instance():
     return praw.Reddit(
         client_id=REDDIT_CLIENT_ID,
         client_secret=REDDIT_CLIENT_SECRET,
         user_agent=REDDIT_USER_AGENT
     )
+
 
 def run_ffprobe_cmd(cmd: List[str]) -> Optional[str]:
     try:
@@ -55,6 +57,7 @@ def run_ffprobe_cmd(cmd: List[str]) -> Optional[str]:
             return None
     except Exception:
         return None
+
 
 def get_video_bitrate(filepath: str) -> Optional[int]:
     output = run_ffprobe_cmd([
@@ -71,6 +74,7 @@ def get_video_bitrate(filepath: str) -> Optional[int]:
             return None
     return None
 
+
 def get_video_codec(filepath: str) -> Optional[str]:
     output = run_ffprobe_cmd([
         "ffprobe", "-v", "error",
@@ -80,6 +84,7 @@ def get_video_codec(filepath: str) -> Optional[str]:
         filepath
     ])
     return output
+
 
 def get_audio_channels(filepath: str) -> Optional[int]:
     output = run_ffprobe_cmd([
@@ -95,6 +100,7 @@ def get_audio_channels(filepath: str) -> Optional[int]:
         except ValueError:
             return None
     return None
+
 
 def get_video_fps(filepath: str) -> Optional[float]:
     output = run_ffprobe_cmd([
@@ -117,12 +123,14 @@ def get_video_fps(filepath: str) -> Optional[float]:
         except Exception:
             return None
 
+
 def get_video_orientation(filepath: str) -> Optional[str]:
     res = get_video_resolution(filepath)
     if not res:
         return None
     w, h = res
     return "vertical" if h > w else "horizontal"
+
 
 def get_video_resolution(filepath: str) -> Optional[Tuple[int, int]]:
     output = run_ffprobe_cmd([
@@ -139,6 +147,7 @@ def get_video_resolution(filepath: str) -> Optional[Tuple[int, int]]:
             return None
     return None
 
+
 def calculate_file_hash(filepath: str, chunk_size=8192) -> str:
     hash_md5 = hashlib.md5()
     try:
@@ -149,6 +158,7 @@ def calculate_file_hash(filepath: str, chunk_size=8192) -> str:
     except Exception as e:
         logger.error(f"Failed to hash file {filepath}: {e}")
         return ""
+
 
 async def get_video_duration(filepath: str) -> Optional[float]:
     cmd = [
@@ -165,6 +175,7 @@ async def get_video_duration(filepath: str) -> Optional[float]:
         return float(stdout.strip())
     except Exception:
         return None
+
 
 async def is_video_suitable(filepath: str) -> bool:
     file_hash = calculate_file_hash(filepath)
@@ -214,6 +225,12 @@ async def is_video_suitable(filepath: str) -> bool:
 
     return True
 
+
+async def async_subreddit_top(subreddit, limit):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lambda: list(subreddit.top(time_filter="week", limit=limit)))
+
+
 async def fetch_reddit_videos(limit_per_sub=50) -> List[Tuple[str, str]]:
     reddit = get_reddit_instance()
     candidates = []
@@ -224,7 +241,8 @@ async def fetch_reddit_videos(limit_per_sub=50) -> List[Tuple[str, str]]:
             thresh = SUBREDDIT_THRESHOLDS.get(subreddit_name, {"score": 2000, "comments": 5000})
             count = 0
 
-            async for post in async_subreddit_top(subreddit, limit_per_sub):
+            posts = await async_subreddit_top(subreddit, limit_per_sub)
+            for post in posts:
                 if count >= limit_per_sub:
                     break
                 if not post.is_video or not hasattr(post, "media"):
@@ -238,7 +256,7 @@ async def fetch_reddit_videos(limit_per_sub=50) -> List[Tuple[str, str]]:
                 if post.id in seen_post_ids:
                     continue
 
-                candidates.append((post.id, fallback_url, post.title))
+                candidates.append((post.id, post.title))
                 seen_post_ids.add(post.id)
                 count += 1
         except Exception as e:
@@ -246,15 +264,11 @@ async def fetch_reddit_videos(limit_per_sub=50) -> List[Tuple[str, str]]:
 
     return candidates
 
-async def async_subreddit_top(subreddit, limit):
-    # PRAW is synchronous; run in executor to avoid blocking
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, lambda: list(subreddit.top(time_filter="week", limit=limit)))
 
 async def download_reddit_video_with_ytdlp(post_url: str, output_dir: str) -> Optional[str]:
     filename_template = "%(id)s.%(ext)s"
     output_template = os.path.join(output_dir, filename_template)
-    cmd = f"yt-dlp --quiet --no-warnings --merge-output-format mp4 -o '{output_template}' {shlex.quote(post_url)}"
+    cmd = f"yt-dlp --quiet --no-warnings --merge-output-format mp4 -o {shlex.quote(output_template)} {shlex.quote(post_url)}"
     proc = await asyncio.create_subprocess_shell(
         cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -265,13 +279,13 @@ async def download_reddit_video_with_ytdlp(post_url: str, output_dir: str) -> Op
         logger.error(f"yt-dlp failed: {stderr.decode().strip()}")
         return None
 
-    # Extract ID from post_url
     id_ = post_url.rstrip('/').split("/")[-1]
     candidate_path = os.path.join(output_dir, f"{id_}.mp4")
     if os.path.exists(candidate_path):
         return candidate_path
     logger.error(f"Downloaded file not found: {candidate_path}")
     return None
+
 
 async def scrape_video() -> Optional[Tuple[str, str]]:
     videos = await fetch_reddit_videos()
@@ -280,7 +294,7 @@ async def scrape_video() -> Optional[Tuple[str, str]]:
         return None
 
     random.shuffle(videos)
-    for video_id, video_url, title in videos:
+    for video_id, title in videos:
         reddit_url = f"https://redd.it/{video_id}"
         logger.info(f"Downloading video via yt-dlp from Reddit post {reddit_url}")
         video_path = await download_reddit_video_with_ytdlp(reddit_url, DOWNLOAD_DIR)
@@ -294,6 +308,7 @@ async def scrape_video() -> Optional[Tuple[str, str]]:
             except Exception as e:
                 logger.error(f"Failed to delete {video_path}: {e}")
     return None
+
 
 def cleanup_files(paths: List[str]):
     for path in paths:
