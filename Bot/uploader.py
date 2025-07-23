@@ -2,6 +2,7 @@ import logging
 import os
 from aiogram import Bot
 from aiogram.types.input_file import BufferedInputFile
+from typing import List
 
 logger = logging.getLogger("TelegramVideoBot")
 
@@ -29,10 +30,11 @@ async def upload_video(video_path: str):
         logger.error(f"Upload failed: {e}")
         raise
 
-def cleanup_files(paths: list[str]):
+def cleanup_files(paths: List[str]):
     for path in paths:
         try:
-            os.remove(path)
-            logger.info(f"Deleted file: {path}")
+            if os.path.exists(path):
+                os.remove(path)
+                logger.info(f"Deleted file: {path}")
         except Exception as e:
             logger.warning(f"Failed to delete {path}: {e}")
