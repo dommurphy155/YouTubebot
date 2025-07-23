@@ -1,7 +1,7 @@
 import logging
 import os
-from telegram import Bot, InputFile
 from typing import List
+from telegram import Bot, InputFile
 
 logger = logging.getLogger("TelegramVideoBot")
 
@@ -20,7 +20,8 @@ async def upload_video(video_path: str):
                 document=input_file,
                 caption="🎬 New video\n#viral #funny #trending #shorts #mustwatch",
                 disable_notification=True,
-                parse_mode="HTML"
+                parse_mode="HTML",
+                write_timeout=120,
             )
         logger.info("Upload successful")
     except Exception as e:
