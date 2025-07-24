@@ -8,8 +8,8 @@ INPUT_DIR = "downloads"
 OUTPUT_DIR = "ready"
 
 # Loosened constraints to allow more borderline videos
-MIN_DURATION = 15
-MAX_DURATION = 90
+MIN_DURATION = 20
+MAX_DURATION = 60
 TARGET_RESOLUTION = (1080, 1920)
 CRF = 28
 
