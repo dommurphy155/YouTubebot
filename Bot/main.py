@@ -81,23 +81,28 @@ async def stop_telegram_bot(app):
 
 async def main_loop():
     update_ytdlp()
-
     app = await start_telegram_bot()
 
     try:
         while running:
             try:
-                result = await scraper.scrape_video()
-                if not result:
-                    logger.info("No suitable videos found. Waiting 1 minute before retry.")
-                    await asyncio.sleep(60 + random.uniform(5, 15))
+                success = False
+                for attempt in range(3):
+                    result = await scraper.scrape_video()
+                    if result:
+                        success = True
+                        break
+                    logger.info(f"No suitable video on attempt {attempt + 1}/3, retrying...")
+
+                if not success:
+                    logger.warning("Max retries reached without suitable videos. Skipping cycle.")
                     continue
 
-                video_path, title = result  # title currently unused, reserved for captioning
+                video_path, title = result
 
-                # Sanity check: double check video suitability with editor's is_video_suitable sync function
+                # Sanity check: double check video suitability
                 if not editor.is_video_suitable(video_path):
-                    logger.info(f"Video {video_path} deemed unsuitable by editor check. Cleaning up.")
+                    logger.info(f"Video {video_path} deemed unsuitable by editor. Cleaning up.")
                     scraper.cleanup_files([video_path])
                     continue
 
@@ -106,12 +111,12 @@ async def main_loop():
 
                 scraper.cleanup_files([video_path, edited_path])
 
-                # Random short sleep to avoid rate limits or rapid repeats
+                # Post-upload cooldown
                 await asyncio.sleep(random.uniform(10, 30))
 
             except Exception as e:
                 logger.error(f"Main loop error: {e}")
-                await asyncio.sleep(30)
+                await asyncio.sleep(10)
     finally:
         await stop_telegram_bot(app)
 
