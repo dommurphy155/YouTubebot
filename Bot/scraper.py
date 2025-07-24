@@ -35,6 +35,7 @@ DEFAULT_THRESHOLDS = {"score": 3000, "comments": 8000}
 REDDIT_CLIENT_ID = os.environ["REDDIT_CLIENT_ID"]
 REDDIT_CLIENT_SECRET = os.environ["REDDIT_CLIENT_SECRET"]
 REDDIT_USER_AGENT = os.environ["REDDIT_USER_AGENT"]
+HUGGINGFACE_API_KEY = os.environ.get("HUGGINGFACE_API_KEY")
 
 STATE_FILE = os.path.join(DOWNLOAD_DIR, "scraper_state.json")
 
@@ -85,6 +86,44 @@ async def async_subreddit_top(subreddit, limit):
         None, lambda: list(subreddit.top(time_filter="week", limit=limit))
     )
 
+async def huggingface_filter(text: str) -> bool:
+    """
+    Use Hugging Face zero-shot classification to check if the post title
+    fits desired trends/topics.
+    """
+    if not HUGGINGFACE_API_KEY:
+        logger.warning("Hugging Face API key not set, skipping HF filter.")
+        return True  # fallback: allow all if no key
+
+    url = "https://api-inference.huggingface.co/models/facebook/bart-large-mnli"
+    headers = {
+        "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "inputs": text,
+        "parameters": {"candidate_labels": ["funny", "viral", "fail", "epic", "crazy", "shocking", "wow", "fun", "interesting"]},
+        "options": {"wait_for_model": True}
+    }
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(url, headers=headers, json=data, timeout=20) as resp:
+                if resp.status != 200:
+                    logger.warning(f"Hugging Face API error {resp.status}")
+                    return False
+                result = await resp.json()
+                scores = result.get("scores", [])
+                if not scores:
+                    return False
+                # If any label score > 0.6, accept it
+                if max(scores) > 0.6:
+                    return True
+                return False
+        except Exception as e:
+            logger.error(f"Hugging Face filter exception: {e}")
+            return False
+
 async def fetch_reddit_videos(limit_per_sub=50) -> List[Tuple[str, str, str]]:
     reddit = get_reddit_instance()
     results = []
@@ -116,6 +155,12 @@ async def fetch_reddit_videos(limit_per_sub=50) -> List[Tuple[str, str, str]]:
                     continue
 
                 if post.id in seen_post_ids:
+                    continue
+
+                # Hugging Face AI filter on post title
+                is_trending = await huggingface_filter(post.title)
+                if not is_trending:
+                    logger.info(f"Post {post.id} filtered out by HF AI filter.")
                     continue
 
                 seen_post_ids.add(post.id)
