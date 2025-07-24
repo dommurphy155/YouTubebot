@@ -91,28 +91,22 @@ async def main_loop():
     try:
         while not shutdown_event.is_set():
             try:
-                success = False
-                for attempt in range(3):
-                    if shutdown_event.is_set():
-                        logger.info("Shutdown requested. Exiting retry loop early.")
-                        return
+                result = None
+                attempt = 0
 
+                while not result and not shutdown_event.is_set():
+                    attempt += 1
                     result = await scraper.scrape_video()
-                    if result:
-                        success = True
-                        break
+                    if not result:
+                        logger.warning(f"No suitable videos found. Attempt #{attempt}")
+                        await asyncio.sleep(5)
 
-                    logger.warning(f"No suitable videos found. Retry attempt #{attempt + 1}")
-                    await asyncio.sleep(5)  # Backoff to avoid spin
-
-                if not success:
-                    logger.warning("Max retries reached without suitable videos. Skipping cycle.")
-                    await asyncio.sleep(10)  # Avoid tight loop on failure
-                    continue
+                if shutdown_event.is_set():
+                    logger.info("Shutdown requested before processing video.")
+                    return
 
                 video_path, title = result
 
-                # Sanity check: double check video suitability
                 if not editor.is_video_suitable(video_path):
                     logger.info(f"Video {video_path} deemed unsuitable by editor. Cleaning up.")
                     scraper.cleanup_files([video_path])
@@ -123,7 +117,6 @@ async def main_loop():
 
                 scraper.cleanup_files([video_path, edited_path])
 
-                # Post-upload cooldown with shutdown check
                 for _ in range(int(random.uniform(10, 30))):
                     if shutdown_event.is_set():
                         logger.info("Shutdown requested during cooldown. Exiting main loop.")
@@ -132,7 +125,6 @@ async def main_loop():
 
             except Exception as e:
                 logger.error(f"Main loop error: {e}")
-                # Sleep shorter on error but still interruptible
                 for _ in range(10):
                     if shutdown_event.is_set():
                         logger.info("Shutdown requested during error sleep. Exiting.")
@@ -143,7 +135,6 @@ async def main_loop():
 
 
 if __name__ == "__main__":
-    # Register shutdown signals
     signal.signal(signal.SIGTERM, handle_shutdown)
     signal.signal(signal.SIGINT, handle_shutdown)
 
