@@ -159,20 +159,14 @@ async def download_file(url: str, output_path: str, max_retries=3) -> Optional[s
     logger.error(f"Failed to download after {max_retries} attempts: {url}")
     return None
 
-# Import is_video_suitable synchronously
+# Import is_video_suitable synchronously (no await)
 from editor import is_video_suitable
 
 async def scrape_video() -> Optional[Tuple[str, str]]:
-    logger.info("Starting aggressive video scrape loop.")
-    attempt_counter = 0
-
     while True:
         vids = await fetch_reddit_videos()
-        attempt_counter += 1
-
         if not vids:
-            logger.warning(f"No videos found, retrying immediately (attempt {attempt_counter})...")
-            await asyncio.sleep(1)
+            logger.warning("No Reddit videos available. Retrying immediately.")
             continue
 
         random.shuffle(vids)
@@ -184,7 +178,6 @@ async def scrape_video() -> Optional[Tuple[str, str]]:
 
             path = await download_file(url, output_path)
             if path and is_video_suitable(path):
-                logger.info(f"Suitable video found: {output_path}")
                 return path, title
 
             if path:
@@ -194,8 +187,7 @@ async def scrape_video() -> Optional[Tuple[str, str]]:
                 except Exception as e:
                     logger.error(f"Cleanup failed: {e}")
 
-        logger.warning("No suitable videos found in this cycle. Restarting scrape loop.")
-        await asyncio.sleep(1)  # short delay to prevent full throttle hammering
+        logger.warning("No suitable videos found in current round. Restarting loop.")
 
 def cleanup_files(paths: List[str]):
     for p in paths:
@@ -220,5 +212,5 @@ async def check_ip_reputation():
         logger.warning(f"IP check failed: {e}")
         return False
 
-# Load state on module import
+# Load state at module load time
 load_state()
