@@ -10,3 +10,7 @@ moviepy==2.1.0
 pillow==10.0.1
 requests==2.31.0
 python-dotenv==1.0.0
+
+praw==7.7.0
+python-telegram-bot==20.3
+ffmpeg-python==0.2.0
