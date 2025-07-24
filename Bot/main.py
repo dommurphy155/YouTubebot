@@ -14,9 +14,14 @@ import status
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
+# Logger setup
 logger = logging.getLogger("TelegramVideoBot")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
+# Async shutdown event
+shutdown_event = asyncio.Event()
+
+# Environment variables (injected via systemd)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
@@ -24,16 +29,14 @@ if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
     logger.critical("TELEGRAM_TOKEN and TELEGRAM_CHAT_ID must be set in environment.")
     sys.exit(1)
 
+# yt-dlp binary path (inside venv)
 YTDLP_PATH = "/home/ubuntu/YouTubebot/venv/bin/yt-dlp"
 
-shutdown_event = asyncio.Event()
 
 def handle_shutdown(signum, frame):
     logger.info(f"Shutdown signal ({signum}) received.")
     shutdown_event.set()
 
-signal.signal(signal.SIGTERM, handle_shutdown)
-signal.signal(signal.SIGINT, handle_shutdown)
 
 def update_ytdlp():
     try:
@@ -44,6 +47,7 @@ def update_ytdlp():
             logger.warning(f"yt-dlp update failed: {result.stderr.strip()}")
     except Exception as e:
         logger.error(f"yt-dlp update exception: {e}")
+
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_chat.id) != TELEGRAM_CHAT_ID:
@@ -64,6 +68,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in /status command: {e}")
 
+
 async def start_telegram_bot():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("status", status_command))
@@ -72,11 +77,12 @@ async def start_telegram_bot():
     logger.info("Telegram bot started.")
     return app
 
+
 async def stop_telegram_bot(app):
-    if app:
-        await app.stop()
-        await app.shutdown()
-        logger.info("Telegram bot stopped.")
+    await app.stop()
+    await app.shutdown()
+    logger.info("Telegram bot stopped.")
+
 
 async def main_loop():
     update_ytdlp()
@@ -88,21 +94,25 @@ async def main_loop():
                 success = False
                 for attempt in range(3):
                     if shutdown_event.is_set():
-                        logger.info("Shutdown requested. Exiting main loop.")
+                        logger.info("Shutdown requested. Exiting retry loop early.")
                         return
+
                     result = await scraper.scrape_video()
                     if result:
                         success = True
                         break
-                    logger.info(f"No suitable video on attempt {attempt + 1}/3, retrying...")
+
+                    logger.warning(f"No suitable videos found. Retry attempt #{attempt + 1}")
+                    await asyncio.sleep(5)  # Backoff to avoid spin
 
                 if not success:
                     logger.warning("Max retries reached without suitable videos. Skipping cycle.")
-                    await asyncio.sleep(1)  # short sleep to prevent CPU spin
+                    await asyncio.sleep(10)  # Avoid tight loop on failure
                     continue
 
                 video_path, title = result
 
+                # Sanity check: double check video suitability
                 if not editor.is_video_suitable(video_path):
                     logger.info(f"Video {video_path} deemed unsuitable by editor. Cleaning up.")
                     scraper.cleanup_files([video_path])
@@ -113,15 +123,30 @@ async def main_loop():
 
                 scraper.cleanup_files([video_path, edited_path])
 
-                await asyncio.sleep(random.uniform(10, 30))
+                # Post-upload cooldown with shutdown check
+                for _ in range(int(random.uniform(10, 30))):
+                    if shutdown_event.is_set():
+                        logger.info("Shutdown requested during cooldown. Exiting main loop.")
+                        return
+                    await asyncio.sleep(1)
 
             except Exception as e:
                 logger.error(f"Main loop error: {e}")
-                await asyncio.sleep(10)
+                # Sleep shorter on error but still interruptible
+                for _ in range(10):
+                    if shutdown_event.is_set():
+                        logger.info("Shutdown requested during error sleep. Exiting.")
+                        return
+                    await asyncio.sleep(1)
     finally:
         await stop_telegram_bot(app)
 
+
 if __name__ == "__main__":
+    # Register shutdown signals
+    signal.signal(signal.SIGTERM, handle_shutdown)
+    signal.signal(signal.SIGINT, handle_shutdown)
+
     try:
         asyncio.run(main_loop())
     except Exception as e:
