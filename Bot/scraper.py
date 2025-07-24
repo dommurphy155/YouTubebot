@@ -159,16 +159,21 @@ async def download_file(url: str, output_path: str, max_retries=3) -> Optional[s
     logger.error(f"Failed to download after {max_retries} attempts: {url}")
     return None
 
-# Import is_video_suitable synchronously (no await)
+# Import is_video_suitable synchronously
 from editor import is_video_suitable
 
 async def scrape_video() -> Optional[Tuple[str, str]]:
-    max_retries = 3
-    for attempt in range(max_retries):
+    logger.info("Starting aggressive video scrape loop.")
+    attempt_counter = 0
+
+    while True:
         vids = await fetch_reddit_videos()
+        attempt_counter += 1
+
         if not vids:
-            logger.warning(f"No Reddit videos available. Retry {attempt+1}/{max_retries}.")
-            continue  # retry immediately
+            logger.warning(f"No videos found, retrying immediately (attempt {attempt_counter})...")
+            await asyncio.sleep(1)
+            continue
 
         random.shuffle(vids)
         for vid_id, title, url in vids:
@@ -178,7 +183,8 @@ async def scrape_video() -> Optional[Tuple[str, str]]:
             await asyncio.sleep(random.uniform(3, 10))
 
             path = await download_file(url, output_path)
-            if path and is_video_suitable(path):  # <-- NO await here, sync call
+            if path and is_video_suitable(path):
+                logger.info(f"Suitable video found: {output_path}")
                 return path, title
 
             if path:
@@ -188,11 +194,8 @@ async def scrape_video() -> Optional[Tuple[str, str]]:
                 except Exception as e:
                     logger.error(f"Cleanup failed: {e}")
 
-        logger.warning(f"No suitable videos found on attempt {attempt+1}/{max_retries}.")
-
-    logger.info("Max retries reached without suitable videos, waiting 60s before next cycle.")
-    await asyncio.sleep(60)
-    return None
+        logger.warning("No suitable videos found in this cycle. Restarting scrape loop.")
+        await asyncio.sleep(1)  # short delay to prevent full throttle hammering
 
 def cleanup_files(paths: List[str]):
     for p in paths:
@@ -217,5 +220,5 @@ async def check_ip_reputation():
         logger.warning(f"IP check failed: {e}")
         return False
 
-# Load state at module load time
+# Load state on module import
 load_state()
