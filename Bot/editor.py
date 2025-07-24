@@ -117,27 +117,35 @@ def get_video_duration(video_path: str) -> float:
         logger.warning(f"Failed to get video duration: {e}")
         return 0.0
 
-# === MAIN EDIT FUNCTION (NOW WITH ERROR LOG FILE SAVE AND PRINT) ===
+def get_video_fps(video_path: str) -> float:
+    try:
+        result = subprocess.run([
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=r_frame_rate",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            video_path
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+        fps_str = result.stdout.strip()
+        # r_frame_rate comes as a fraction, e.g. "30/1"
+        num, den = fps_str.split('/')
+        return float(num) / float(den)
+    except Exception as e:
+        logger.warning(f"Failed to get video fps: {e}")
+        return 30.0  # fallback
+
+# === MAIN EDIT FUNCTION WITH UPGRADES ===
 async def edit_video(input_path: str) -> str:
     output_path = os.path.join(OUTPUT_DIR, os.path.basename(input_path))
     total_duration = get_video_duration(input_path)
     start_time = detect_best_segment(input_path)
+    fps = get_video_fps(input_path)
     
-    logger.info(f"Editing video: {input_path} (start={start_time}s, total_duration={total_duration}s)")
+    logger.info(f"Editing video: {input_path} (start={start_time}s, total_duration={total_duration}s, fps={fps})")
 
-    common_vfilters = (
-        "scale=1080:-1,"
-        "crop=1080:1920:(in_w-1080)/2:(in_h-1920)/2,"
-        "eq=contrast=1.1:brightness=0.05,"
-        "unsharp=5:5:1.0,"
-        "fade=t=in:st=0:d=1,fade=t=out:st=44:d=1,"
-        "minterpolate='fps=30:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1'"
-    )
-
-    has_audio = has_audio_stream(input_path)
-    
     min_duration = 15
-    target_duration = min(45, max(min_duration, total_duration))
+    max_duration = 45
+    target_duration = min(max_duration, max(min_duration, total_duration))
     ffmpeg_extra = []
     if total_duration < min_duration:
         loop_count = int(min_duration // total_duration) + 1
@@ -146,19 +154,72 @@ async def edit_video(input_path: str) -> str:
         ])
         target_duration = min_duration
 
+    has_audio = has_audio_stream(input_path)
+
+    # Filters setup:
+    # Scale width to 1080, height automatic -2 to keep aspect ratio and divisible by 2
+    # If after scale height < 1920, pad to 1080x1920 centered
+    # Else crop center 1080x1920
+    # Add eq, unsharp, fade (fade out dynamically), minterpolate if fps < 30, format=yuv420p
+    filters_list = []
+    filters_list.append("scale=w=1080:h=-2:flags=lanczos")
+
+    # Will need to check input height after scale:
+    # Use ffprobe to get input width/height for logic below
+    try:
+        result = subprocess.run([
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "default=noprint_wrappers=1",
+            input_path
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+        lines = result.stdout.strip().split('\n')
+        width, height = None, None
+        for line in lines:
+            if line.startswith("width="):
+                width = int(line.split("=")[1])
+            if line.startswith("height="):
+                height = int(line.split("=")[1])
+    except Exception:
+        width, height = 1280, 720  # fallback
+
+    # After scaling width to 1080, compute estimated scaled height
+    scaled_height = int(height * 1080 / width) if width and height else 1920
+
+    if scaled_height < 1920:
+        # Pad vertically centered
+        filters_list.append(f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2")
+    else:
+        # Crop center 1080x1920
+        filters_list.append(f"crop=1080:1920:(in_w-1080)/2:(in_h-1920)/2")
+
+    filters_list.append("eq=contrast=1.1:brightness=0.05")
+    filters_list.append("unsharp=5:5:1.0")
+
+    fade_out_start = max(target_duration - 1, 1)
+    filters_list.append(f"fade=t=in:st=0:d=1,fade=t=out:st={fade_out_start}:d=1")
+
+    if fps < 30:
+        filters_list.append("minterpolate='fps=30:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1'")
+
+    filters_list.append("format=yuv420p")
+
+    video_filter = ",".join(filters_list)
+
     if has_audio:
-        filters = (
-            f"[0:v]{common_vfilters}[v];"
-            f"[0:a]silenceremove=start_periods=1:start_silence=0.1:start_threshold=-50dB:"
-            f"stop_periods=-1:stop_silence=0.1:stop_threshold=-50dB[aout]"
+        # Normalize volume and trim audio to target_duration exactly
+        audio_filter = (
+            f"volume=1.0,atrim=0:{target_duration},asetpts=N/SR/TB"
         )
+        filters = f"[0:v]{video_filter}[v];[0:a]{audio_filter}[aout]"
         maps = ["-map", "[v]", "-map", "[aout]"]
         acodec = "aac"
         audio_bitrate = "128k"
     else:
-        filters = f"[0:v]{common_vfilters}[v]"
+        filters = f"[0:v]{video_filter}[v]"
         maps = ["-map", "[v]"]
-        acodec = "none"
+        acodec = None
         audio_bitrate = None
 
     ffmpeg_cmd = [
@@ -170,11 +231,11 @@ async def edit_video(input_path: str) -> str:
         *maps,
         "-t", str(target_duration),
         "-vcodec", "libx264",
-        "-preset", "fast",
+        "-preset", "veryfast",  # faster encode
         "-crf", "25",
         "-pix_fmt", "yuv420p",
-        "-movflags", "faststart",
-        "-threads", "2",
+        "-movflags", "+faststart",
+        "-threads", "0",  # auto threads
         "-y", output_path
     ]
     if has_audio:
