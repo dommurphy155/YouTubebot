@@ -27,6 +27,22 @@ def get_video_duration(input_path):
         logging.warning(f"Warning: Could not probe video duration: {e}. Processing anyway.")
         return None  # allow video even if duration probe fails
 
+def is_video_suitable(file_path: str) -> bool:
+    """Basic suitability check used by scraper.py before accepting a video."""
+    try:
+        probe = ffmpeg.probe(file_path)
+        duration = float(probe['format']['duration'])
+        width = int(probe['streams'][0]['width'])
+        height = int(probe['streams'][0]['height'])
+        if duration < MIN_DURATION or duration > MAX_DURATION:
+            return False
+        if width < 640 or height < 360:
+            return False
+        return True
+    except Exception as e:
+        logging.error(f"is_video_suitable error: {e}")
+        return False
+
 def get_best_subclip(duration, min_duration: int, max_duration: int) -> tuple:
     if duration is None or duration <= min_duration:
         # No duration or too short, just take first max_duration seconds or full clip
