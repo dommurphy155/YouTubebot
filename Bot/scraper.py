@@ -36,11 +36,11 @@ REDDIT_CLIENT_ID = os.environ["REDDIT_CLIENT_ID"]
 REDDIT_CLIENT_SECRET = os.environ["REDDIT_CLIENT_SECRET"]
 REDDIT_USER_AGENT = os.environ["REDDIT_USER_AGENT"]
 
+STATE_FILE = os.path.join(DOWNLOAD_DIR, "scraper_state.json")
+
 seen_post_ids = set()
 blacklist_urls = set()
 download_failures = set()
-
-STATE_FILE = os.path.join(DOWNLOAD_DIR, "scraper_state.json")
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
@@ -102,16 +102,14 @@ async def fetch_reddit_videos(limit_per_sub=50) -> List[Tuple[str, str, str]]:
                 url = vid.get("fallback_url")
                 if not url or url in blacklist_urls or url in download_failures:
                     continue
-
                 if not url.endswith(".mp4"):
                     continue
 
-                video_duration = vid.get("duration")
-                if video_duration is None or not (15 <= video_duration <= 90):
+                duration = vid.get("duration")
+                if duration is None or not (15 <= duration <= 90):
                     continue
 
-                has_audio = vid.get("has_audio", False)
-                if not has_audio:
+                if not vid.get("has_audio", False):
                     continue
 
                 if post.score < thresh["score"] or post.num_comments < thresh["comments"]:
@@ -125,7 +123,8 @@ async def fetch_reddit_videos(limit_per_sub=50) -> List[Tuple[str, str, str]]:
                 results.append((post.id, post.title, url))
 
         except Exception as e:
-            logger.error(f"{sub} fetch error: {e}")
+            logger.error(f"Error fetching from subreddit {sub}: {e}")
+
     return results
 
 async def download_file(url: str, output_path: str, max_retries=3) -> Optional[str]:
@@ -135,46 +134,46 @@ async def download_file(url: str, output_path: str, max_retries=3) -> Optional[s
         "Accept-Language": "en-US,en;q=0.9"
     }
 
-    for attempt in range(max_retries):
+    for attempt in range(1, max_retries + 1):
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers=headers, timeout=60) as resp:
                     if resp.status != 200:
-                        logger.warning(f"Download failed ({resp.status}) for {url}")
+                        logger.warning(f"[{resp.status}] {url}")
+                        await asyncio.sleep(1)
                         continue
+
                     with open(output_path, "wb") as f:
-                        while True:
-                            chunk = await resp.content.read(65536)
-                            if not chunk:
-                                break
+                        async for chunk in resp.content.iter_chunked(65536):
                             f.write(chunk)
+
                     logger.info(f"Downloaded: {output_path}")
                     return output_path
         except Exception as e:
-            logger.warning(f"Download attempt {attempt+1} failed for {url}: {e}")
+            logger.warning(f"Attempt {attempt} failed for {url}: {e}")
             await asyncio.sleep(2 ** attempt)
 
     download_failures.add(url)
     save_state()
-    logger.error(f"Failed to download after {max_retries} attempts: {url}")
+    logger.error(f"Max retries reached. Failed to download: {url}")
     return None
 
-# Import is_video_suitable synchronously (no await)
+# Critical logic call to suitability filter
 from editor import is_video_suitable
 
 async def scrape_video() -> Optional[Tuple[str, str]]:
     while True:
-        vids = await fetch_reddit_videos()
-        if not vids:
-            logger.warning("No Reddit videos available. Retrying immediately.")
+        videos = await fetch_reddit_videos()
+        if not videos:
+            logger.warning("No videos fetched. Retrying without delay.")
             continue
 
-        random.shuffle(vids)
-        for vid_id, title, url in vids:
-            logger.info(f"Trying video: https://redd.it/{vid_id}")
-            output_path = os.path.join(DOWNLOAD_DIR, f"{vid_id}.mp4")
+        random.shuffle(videos)
 
-            await asyncio.sleep(random.uniform(3, 10))
+        for vid_id, title, url in videos:
+            logger.info(f"Checking: https://redd.it/{vid_id}")
+            output_path = os.path.join(DOWNLOAD_DIR, f"{vid_id}.mp4")
+            await asyncio.sleep(random.uniform(2.5, 6.5))  # Humanlike
 
             path = await download_file(url, output_path)
             if path and is_video_suitable(path):
@@ -183,11 +182,11 @@ async def scrape_video() -> Optional[Tuple[str, str]]:
             if path:
                 try:
                     os.remove(path)
-                    logger.info(f"Deleted unsuitable video: {path}")
+                    logger.info(f"Deleted unsuitable file: {path}")
                 except Exception as e:
-                    logger.error(f"Cleanup failed: {e}")
+                    logger.error(f"Delete failed: {e}")
 
-        logger.warning("No suitable videos found in current round. Restarting loop.")
+        logger.info("Finished current batch. Immediately restarting...")
 
 def cleanup_files(paths: List[str]):
     for p in paths:
@@ -196,21 +195,21 @@ def cleanup_files(paths: List[str]):
                 os.remove(p)
                 logger.info(f"Deleted file: {p}")
         except Exception as e:
-            logger.error(f"Delete failed: {e}")
+            logger.error(f"Cleanup error: {e}")
 
 async def check_ip_reputation():
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get("https://ipinfo.io/json") as resp:
                 if resp.status != 200:
-                    logger.warning("IP info unavailable")
+                    logger.warning("IP info fetch failed.")
                     return False
                 ip = (await resp.json()).get("ip")
-                logger.info(f"External IP: {ip}")
+                logger.info(f"Current external IP: {ip}")
                 return True
     except Exception as e:
-        logger.warning(f"IP check failed: {e}")
+        logger.warning(f"IP check error: {e}")
         return False
 
-# Load state at module load time
+# Initialize state on module load
 load_state()
