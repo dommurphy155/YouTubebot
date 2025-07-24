@@ -4,6 +4,7 @@ import subprocess
 import asyncio
 import logging
 import datetime
+import signal
 from typing import List
 
 OUTPUT_DIR = os.path.join(os.getcwd(), "processed")
@@ -26,8 +27,13 @@ if subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subp
     raise SystemExit(1)
 
 shutdown_event = asyncio.Event()
-for sig in (subprocess.signal.SIGINT, subprocess.signal.SIGTERM):
-    subprocess.signal(signal)  # No-op placeholder
+
+def _handle_shutdown(sig, frame):
+    logger.warning(f"Received signal {sig.name}, shutting down gracefully.")
+    shutdown_event.set()
+
+signal.signal(signal.SIGINT, _handle_shutdown)
+signal.signal(signal.SIGTERM, _handle_shutdown)
 
 _ffmpeg_semaphore = asyncio.Semaphore(1)
 
@@ -73,13 +79,15 @@ def is_video_suitable(path: str) -> bool:
     try:
         dur, w, h, _ = get_video_stats(path)
         return dur >= 1 and w >= 320 and h >= 320
-    except:
+    except Exception as e:
+        logger.warning(f"Video suitability check failed: {e}")
         return False
 
 async def edit_video(input_path: str) -> str:
     dur, w, h, fps = get_video_stats(input_path)
     start = max(0, round((dur - 45) / 2, 2))
     target = dur if dur <= 45 else 45
+
     if dur < 15:
         loop = int(15 // dur) + 1
         loop_args = ["-stream_loop", str(loop - 1)]
