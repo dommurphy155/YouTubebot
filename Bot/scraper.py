@@ -23,7 +23,13 @@ REDDIT_SUBREDDITS = [
     "instant_regret",
     "holdmyjuicebox",
     "blursedimages",
-    "IdiotsInCars"
+    "IdiotsInCars",
+    "youtubehaiku",
+	"ContentCreators",
+	"NewTubers", 
+	"AskReddit",
+	"AITA",
+	"nosleep",
 ]
 
 SUBREDDIT_THRESHOLDS = {
