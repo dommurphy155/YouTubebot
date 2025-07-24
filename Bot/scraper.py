@@ -26,11 +26,11 @@ REDDIT_SUBREDDITS = [
 ]
 
 SUBREDDIT_THRESHOLDS = {
-    "PublicFreakout": {"score": 3000, "comments": 5000},  # loosened thresholds
+    "PublicFreakout": {"score": 3000, "comments": 5000},
     "Unexpected": {"score": 2000, "comments": 4000},
 }
 
-DEFAULT_THRESHOLDS = {"score": 1500, "comments": 3000}  # overall lowered thresholds
+DEFAULT_THRESHOLDS = {"score": 1500, "comments": 3000}
 
 REDDIT_CLIENT_ID = os.environ["REDDIT_CLIENT_ID"]
 REDDIT_CLIENT_SECRET = os.environ["REDDIT_CLIENT_SECRET"]
@@ -89,7 +89,7 @@ async def async_subreddit_top(subreddit, limit):
 async def huggingface_filter(text: str) -> bool:
     if not HUGGINGFACE_API_KEY:
         logger.warning("Hugging Face API key not set, skipping HF filter.")
-        return True  # allow all if no key
+        return True
 
     url = "https://api-inference.huggingface.co/models/facebook/bart-large-mnli"
     headers = {
@@ -107,21 +107,20 @@ async def huggingface_filter(text: str) -> bool:
             async with session.post(url, headers=headers, json=data, timeout=20) as resp:
                 if resp.status != 200:
                     logger.warning(f"Hugging Face API error {resp.status}")
-                    return True  # fallback: accept if API fails
+                    return True
                 result = await resp.json()
                 scores = result.get("scores", [])
                 if not scores:
-                    return True  # fallback allow if no scores
-                if max(scores) > 0.5:  # lower threshold to allow more through
                     return True
-                return False
+                return max(scores) > 0.5
         except Exception as e:
             logger.error(f"Hugging Face filter exception: {e}")
-            return True  # fallback allow on error
+            return True
 
-async def fetch_reddit_videos(limit_per_sub=75) -> List[Tuple[str, str, str]]:
+async def fetch_reddit_videos(limit_per_sub=100) -> List[Tuple[str, str, str]]:
     reddit = get_reddit_instance()
     results = []
+    random.shuffle(REDDIT_SUBREDDITS)
 
     for sub in REDDIT_SUBREDDITS:
         try:
@@ -129,36 +128,30 @@ async def fetch_reddit_videos(limit_per_sub=75) -> List[Tuple[str, str, str]]:
             thresh = SUBREDDIT_THRESHOLDS.get(sub, DEFAULT_THRESHOLDS)
 
             for post in posts:
-                if not post.is_video or not hasattr(post, "media"):
-                    continue
-
-                vid = post.media.get("reddit_video", {})
-                url = vid.get("fallback_url")
-                if not url or url in blacklist_urls or url in download_failures:
-                    continue
-                if not url.endswith(".mp4"):
-                    continue
-
-                duration = vid.get("duration")
-                # Loosen duration constraint, allow more videos
-                if duration is None or not (10 <= duration <= 120):
-                    continue
-
-                # Allow videos without audio but mark for possible skipping later
-                # Remove strict has_audio check to increase throughput
-                # if not vid.get("has_audio", False):
-                #     continue
-
-                if post.score < thresh["score"] or post.num_comments < thresh["comments"]:
-                    continue
-
                 if post.id in seen_post_ids:
                     continue
 
-                # Hugging Face AI filter on post title
-                is_trending = await huggingface_filter(post.title)
-                if not is_trending:
-                    logger.info(f"Post {post.id} filtered out by HF AI filter.")
+                if not post.is_video or not post.media:
+                    logger.info(f"Post {post.id} skipped: not video or media missing.")
+                    continue
+
+                vid = post.media.get("reddit_video") or post.secure_media.get("reddit_video") if post.secure_media else {}
+                url = vid.get("fallback_url")
+                if not url or url in blacklist_urls or url in download_failures or not url.endswith(".mp4"):
+                    logger.info(f"Post {post.id} skipped: invalid or blocked URL.")
+                    continue
+
+                duration = vid.get("duration")
+                if duration is None or not (10 <= duration <= 100):
+                    logger.info(f"Post {post.id} skipped: duration {duration} not in range.")
+                    continue
+
+                if post.score < thresh["score"] or post.num_comments < thresh["comments"]:
+                    logger.info(f"Post {post.id} skipped: score {post.score} or comments {post.num_comments} too low.")
+                    continue
+
+                if not await huggingface_filter(post.title):
+                    logger.info(f"Post {post.id} filtered out by HF.")
                     continue
 
                 seen_post_ids.add(post.id)
@@ -201,7 +194,6 @@ async def download_file(url: str, output_path: str, max_retries=5) -> Optional[s
     logger.error(f"Max retries reached. Failed to download: {url}")
     return None
 
-# Import your updated is_video_suitable from editor.py
 from editor import is_video_suitable
 
 async def scrape_video() -> Optional[Tuple[str, str]]:
@@ -215,7 +207,7 @@ async def scrape_video() -> Optional[Tuple[str, str]]:
         for vid_id, title, url in videos:
             logger.info(f"Checking: https://redd.it/{vid_id}")
             output_path = os.path.join(DOWNLOAD_DIR, f"{vid_id}.mp4")
-            await asyncio.sleep(random.uniform(1, 2))  # reduced sleep for speed
+            await asyncio.sleep(random.uniform(1, 2))
 
             path = await download_file(url, output_path)
             if path and is_video_suitable(path):
@@ -253,5 +245,4 @@ async def check_ip_reputation():
         logger.warning(f"IP check error: {e}")
         return False
 
-# Load scraper state on boot
 load_state()
