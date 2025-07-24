@@ -2,6 +2,7 @@ import os
 import logging
 import ffmpeg
 import random
+import asyncio
 
 logging.basicConfig(
     level=logging.INFO,
@@ -119,6 +120,16 @@ def process_video(file_path):
     except Exception as e:
         logging.error(f"❌ process_video error: {str(e)}")
         return None
+
+async def edit_video(file_path: str) -> str:
+    """Async-compatible wrapper so main.py can call edit_video(...)"""
+    logging.info(f"🧠 Launching async edit_video for: {file_path}")
+    output = await asyncio.to_thread(process_video, file_path)
+    if output:
+        logging.info(f"📤 edit_video done: {output}")
+    else:
+        logging.warning(f"⚠️ edit_video failed for: {file_path}")
+    return output
 
 def main():
     logging.info("🚀 Starting editor.py...")
