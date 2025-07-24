@@ -14,14 +14,9 @@ import status
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# Logger setup
 logger = logging.getLogger("TelegramVideoBot")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Bot control
-running = True
-
-# Environment variables (injected via systemd)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
@@ -29,13 +24,16 @@ if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
     logger.critical("TELEGRAM_TOKEN and TELEGRAM_CHAT_ID must be set in environment.")
     sys.exit(1)
 
-# yt-dlp binary path (inside venv)
 YTDLP_PATH = "/home/ubuntu/YouTubebot/venv/bin/yt-dlp"
 
+shutdown_event = asyncio.Event()
+
 def handle_shutdown(signum, frame):
-    global running
-    running = False
-    logger.info("Shutdown signal received.")
+    logger.info(f"Shutdown signal ({signum}) received.")
+    shutdown_event.set()
+
+signal.signal(signal.SIGTERM, handle_shutdown)
+signal.signal(signal.SIGINT, handle_shutdown)
 
 def update_ytdlp():
     try:
@@ -75,19 +73,23 @@ async def start_telegram_bot():
     return app
 
 async def stop_telegram_bot(app):
-    await app.stop()
-    await app.shutdown()
-    logger.info("Telegram bot stopped.")
+    if app:
+        await app.stop()
+        await app.shutdown()
+        logger.info("Telegram bot stopped.")
 
 async def main_loop():
     update_ytdlp()
     app = await start_telegram_bot()
 
     try:
-        while running:
+        while not shutdown_event.is_set():
             try:
                 success = False
                 for attempt in range(3):
+                    if shutdown_event.is_set():
+                        logger.info("Shutdown requested. Exiting main loop.")
+                        return
                     result = await scraper.scrape_video()
                     if result:
                         success = True
@@ -96,11 +98,11 @@ async def main_loop():
 
                 if not success:
                     logger.warning("Max retries reached without suitable videos. Skipping cycle.")
+                    await asyncio.sleep(1)  # short sleep to prevent CPU spin
                     continue
 
                 video_path, title = result
 
-                # Sanity check: double check video suitability
                 if not editor.is_video_suitable(video_path):
                     logger.info(f"Video {video_path} deemed unsuitable by editor. Cleaning up.")
                     scraper.cleanup_files([video_path])
@@ -111,7 +113,6 @@ async def main_loop():
 
                 scraper.cleanup_files([video_path, edited_path])
 
-                # Post-upload cooldown
                 await asyncio.sleep(random.uniform(10, 30))
 
             except Exception as e:
@@ -121,9 +122,6 @@ async def main_loop():
         await stop_telegram_bot(app)
 
 if __name__ == "__main__":
-    signal.signal(signal.SIGTERM, handle_shutdown)
-    signal.signal(signal.SIGINT, handle_shutdown)
-
     try:
         asyncio.run(main_loop())
     except Exception as e:
