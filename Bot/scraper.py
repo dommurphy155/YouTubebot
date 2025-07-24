@@ -7,6 +7,7 @@ from typing import Optional, Tuple, List
 
 import praw
 import aiohttp
+from prawcore import ServerError, RequestException
 
 logger = logging.getLogger("TelegramVideoBot")
 logging.basicConfig(level=logging.INFO)
@@ -81,25 +82,36 @@ async def fetch_candidates(limit=100):
     reddit = get_reddit()
     results = []
     for sub in REDDIT_SUBREDDITS:
-        try:
-            posts = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: list(reddit.subreddit(sub).hot(limit=limit))
-            )
-            thresh = SUBREDDIT_THRESHOLDS.get(sub, DEFAULT_THRESHOLDS)
-            for post in posts:
-                if post.id in seen_post_ids or post.url in blacklist_urls:
-                    continue
-                if not hasattr(post, "is_video"):
-                    continue
-                if not post.is_video and not any(
-                    post.url.startswith(p) for p in ("https://v.redd.it", "https://i.redd.it", "https://youtube.com", "https://youtu.be")
-                ):
-                    continue
-                if post.score < thresh["score"] and post.num_comments < thresh["comments"]:
-                    continue
-                results.append((post.id, post.title, post.url))
-        except Exception as e:
-            logger.error(f"Error scraping subreddit {sub}: {e}")
+        retries = 0
+        while retries < 3:
+            try:
+                posts = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: list(reddit.subreddit(sub).hot(limit=limit))
+                )
+                thresh = SUBREDDIT_THRESHOLDS.get(sub, DEFAULT_THRESHOLDS)
+                for post in posts:
+                    if post.id in seen_post_ids or post.url in blacklist_urls:
+                        continue
+                    if not hasattr(post, "is_video"):
+                        continue
+                    if not post.is_video and not any(
+                        post.url.startswith(p) for p in ("https://v.redd.it", "https://i.redd.it", "https://youtube.com", "https://youtu.be")
+                    ):
+                        continue
+                    if post.score < thresh["score"] and post.num_comments < thresh["comments"]:
+                        continue
+                    results.append((post.id, post.title, post.url))
+                break  # success, exit retry loop
+            except (ServerError, RequestException) as e:
+                retries += 1
+                wait = 2 ** retries
+                logger.warning(f"Fetch error from /r/{sub}: {e} – retrying in {wait}s (attempt {retries}/3)")
+                await asyncio.sleep(wait)
+            except Exception as e:
+                logger.error(f"Unexpected error scraping /r/{sub}: {e}")
+                break  # stop retrying on unknown errors
+        else:
+            logger.error(f"Skipping /r/{sub} after 3 failed retries.")
     random.shuffle(results)
     return results
 
@@ -125,6 +137,7 @@ async def scrape_video() -> Optional[Tuple[str, str]]:
     while True:
         candidates = await fetch_candidates()
         if not candidates:
+            logger.warning("No suitable posts found, retrying immediately.")
             continue  # Don't sleep — retry aggressively
         for pid, title, url in candidates:
             logger.info(f"Trying post {pid}: {url}")
