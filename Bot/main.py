@@ -54,7 +54,7 @@ async def send_alert_message(text: str):
         await alert_bot.send_message(
             chat_id=TELEGRAM_CHAT_ID,
             text=text,
-            parse_mode="Markdown",
+            parse_mode="MarkdownV2",
             disable_web_page_preview=True
         )
     except Exception as e:
@@ -76,7 +76,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📤 Next video at: `{status.get_next_schedule()}` (UK)\n"
             f"🔖 Version: `{status.get_bot_version()}`"
         )
-        await update.message.reply_text(msg, parse_mode="Markdown")
+        await update.message.reply_text(msg, parse_mode="MarkdownV2")
     except Exception as e:
         logger.error(f"/status error: {e}")
 
