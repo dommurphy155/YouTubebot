@@ -163,29 +163,35 @@ async def download_file(url: str, output_path: str, max_retries=3) -> Optional[s
 from editor import is_video_suitable
 
 async def scrape_video() -> Optional[Tuple[str, str]]:
-    vids = await fetch_reddit_videos()
-    if not vids:
-        logger.warning("No Reddit videos available.")
-        return None
+    max_retries = 3
+    for attempt in range(max_retries):
+        vids = await fetch_reddit_videos()
+        if not vids:
+            logger.warning(f"No Reddit videos available. Retry {attempt+1}/{max_retries}.")
+            continue  # retry immediately
 
-    random.shuffle(vids)
-    for vid_id, title, url in vids:
-        logger.info(f"Trying video: https://redd.it/{vid_id}")
-        output_path = os.path.join(DOWNLOAD_DIR, f"{vid_id}.mp4")
+        random.shuffle(vids)
+        for vid_id, title, url in vids:
+            logger.info(f"Trying video: https://redd.it/{vid_id}")
+            output_path = os.path.join(DOWNLOAD_DIR, f"{vid_id}.mp4")
 
-        await asyncio.sleep(random.uniform(3, 10))
+            await asyncio.sleep(random.uniform(3, 10))
 
-        path = await download_file(url, output_path)
-        if path and is_video_suitable(path):  # <-- NO await here, sync call
-            return path, title
+            path = await download_file(url, output_path)
+            if path and is_video_suitable(path):  # <-- NO await here, sync call
+                return path, title
 
-        if path:
-            try:
-                os.remove(path)
-                logger.info(f"Deleted unsuitable video: {path}")
-            except Exception as e:
-                logger.error(f"Cleanup failed: {e}")
+            if path:
+                try:
+                    os.remove(path)
+                    logger.info(f"Deleted unsuitable video: {path}")
+                except Exception as e:
+                    logger.error(f"Cleanup failed: {e}")
 
+        logger.warning(f"No suitable videos found on attempt {attempt+1}/{max_retries}.")
+
+    logger.info("Max retries reached without suitable videos, waiting 60s before next cycle.")
+    await asyncio.sleep(60)
     return None
 
 def cleanup_files(paths: List[str]):
@@ -213,4 +219,3 @@ async def check_ip_reputation():
 
 # Load state at module load time
 load_state()
-
