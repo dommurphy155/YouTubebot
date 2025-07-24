@@ -5,6 +5,7 @@ import sys
 import os
 import subprocess
 import random
+import traceback
 
 import scraper
 import editor
@@ -122,44 +123,60 @@ async def main_loop():
     try:
         while not shutdown_event.is_set():
             try:
-                attempt = 0
+                # Aggressive retry until something valid is found
                 result = None
+                attempts = 0
                 while not result and not shutdown_event.is_set():
-                    attempt += 1
+                    attempts += 1
                     result = await scraper.scrape_video()
                     if not result:
-                        logger.warning(f"No video found. Attempt #{attempt}")
-                        await asyncio.sleep(5)
+                        logger.warning(f"No valid video found. Retry #{attempts}")
+                        await asyncio.sleep(min(1 + attempts * 0.5, 10))
 
                 if shutdown_event.is_set():
-                    logger.info("Shutdown before processing.")
+                    logger.info("Shutdown during scrape loop.")
                     return
 
                 video_path, title = result
 
                 if not editor.is_video_suitable(video_path):
-                    logger.info(f"Video {video_path} unsuitable. Skipping.")
+                    logger.info(f"Video {video_path} unsuitable. Cleaning up.")
                     scraper.cleanup_files([video_path])
                     continue
 
-                edited_path = await editor.edit_video(video_path)
+                edited_path = None
+                try:
+                    edited_path = await editor.edit_video(video_path)
+                except Exception as e:
+                    tb = traceback.format_exc()
+                    logger.error(f"Editing failed: {e}")
+                    await send_alert_message(
+                        f"❌ *Editing Error*\n"
+                        f"Title: `{title}`\n"
+                        f"```\n{tb[-3000:]}\n```"
+                    )
+                    scraper.cleanup_files([video_path])
+                    continue
+
                 await uploader.upload_video(edited_path)
 
                 scraper.cleanup_files([video_path, edited_path])
 
+                # Wait before restarting loop
                 for _ in range(random.randint(10, 30)):
                     if shutdown_event.is_set():
                         return
                     await asyncio.sleep(1)
 
             except Exception as e:
+                tb = traceback.format_exc()
                 logger.error(f"Main loop error: {e}")
                 await send_alert_message(
                     f"❗ *Critical Bot Failure*\n"
-                    f"```\n{e}\n```\n"
-                    f"⚠️ Check logs and restart if needed."
+                    f"```\n{tb[-3000:]}\n```"
                 )
-                await asyncio.sleep(10)
+                await asyncio.sleep(5)
+
     finally:
         await stop_telegram_bot(app)
 
@@ -171,13 +188,13 @@ if __name__ == "__main__":
     try:
         asyncio.run(main_loop())
     except Exception as e:
+        tb = traceback.format_exc()
         logger.critical(f"Fatal bot error: {e}")
         async def crash_alert():
             try:
                 await send_alert_message(
                     f"💥 *Bot Crash*\n"
-                    f"```\n{e}\n```\n"
-                    f"⚠️ Manual fix needed."
+                    f"```\n{tb[-3000:]}\n```"
                 )
             except:
                 pass
