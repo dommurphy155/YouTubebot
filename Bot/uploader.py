@@ -8,8 +8,14 @@ logger = logging.getLogger("TelegramVideoBot")
 logging.basicConfig(level=logging.INFO)
 
 # Read environment variables for Telegram credentials
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-TELEGRAM_CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+
+if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+    logger.critical("TELEGRAM_TOKEN and TELEGRAM_CHAT_ID must be set in environment.")
+    raise EnvironmentError("Missing Telegram credentials in environment variables.")
+
+TELEGRAM_CHAT_ID = int(TELEGRAM_CHAT_ID)
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
@@ -23,8 +29,8 @@ def get_video_metadata(video_path: str):
             "-of", "default=noprint_wrappers=1:nokey=1",
             video_path,
         ]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-        duration = float(result.stdout.strip()) if result.returncode == 0 else None
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=10)
+        duration = float(result.stdout.strip()) if result.returncode == 0 and result.stdout.strip() else None
         size_mb = os.path.getsize(video_path) / (1024 * 1024)
         return (
             round(duration, 2) if duration is not None else None,
