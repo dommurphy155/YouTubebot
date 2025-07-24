@@ -26,11 +26,11 @@ REDDIT_SUBREDDITS = [
 ]
 
 SUBREDDIT_THRESHOLDS = {
-    "PublicFreakout": {"score": 5000, "comments": 12000},
-    "Unexpected": {"score": 3000, "comments": 8000},
+    "PublicFreakout": {"score": 3000, "comments": 5000},  # loosened thresholds
+    "Unexpected": {"score": 2000, "comments": 4000},
 }
 
-DEFAULT_THRESHOLDS = {"score": 3000, "comments": 8000}
+DEFAULT_THRESHOLDS = {"score": 1500, "comments": 3000}  # overall lowered thresholds
 
 REDDIT_CLIENT_ID = os.environ["REDDIT_CLIENT_ID"]
 REDDIT_CLIENT_SECRET = os.environ["REDDIT_CLIENT_SECRET"]
@@ -87,13 +87,9 @@ async def async_subreddit_top(subreddit, limit):
     )
 
 async def huggingface_filter(text: str) -> bool:
-    """
-    Use Hugging Face zero-shot classification to check if the post title
-    fits desired trends/topics.
-    """
     if not HUGGINGFACE_API_KEY:
         logger.warning("Hugging Face API key not set, skipping HF filter.")
-        return True  # fallback: allow all if no key
+        return True  # allow all if no key
 
     url = "https://api-inference.huggingface.co/models/facebook/bart-large-mnli"
     headers = {
@@ -111,20 +107,19 @@ async def huggingface_filter(text: str) -> bool:
             async with session.post(url, headers=headers, json=data, timeout=20) as resp:
                 if resp.status != 200:
                     logger.warning(f"Hugging Face API error {resp.status}")
-                    return False
+                    return True  # fallback: accept if API fails
                 result = await resp.json()
                 scores = result.get("scores", [])
                 if not scores:
-                    return False
-                # If any label score > 0.6, accept it
-                if max(scores) > 0.6:
+                    return True  # fallback allow if no scores
+                if max(scores) > 0.5:  # lower threshold to allow more through
                     return True
                 return False
         except Exception as e:
             logger.error(f"Hugging Face filter exception: {e}")
-            return False
+            return True  # fallback allow on error
 
-async def fetch_reddit_videos(limit_per_sub=50) -> List[Tuple[str, str, str]]:
+async def fetch_reddit_videos(limit_per_sub=75) -> List[Tuple[str, str, str]]:
     reddit = get_reddit_instance()
     results = []
 
@@ -145,11 +140,14 @@ async def fetch_reddit_videos(limit_per_sub=50) -> List[Tuple[str, str, str]]:
                     continue
 
                 duration = vid.get("duration")
-                if duration is None or not (15 <= duration <= 90):
+                # Loosen duration constraint, allow more videos
+                if duration is None or not (10 <= duration <= 120):
                     continue
 
-                if not vid.get("has_audio", False):
-                    continue
+                # Allow videos without audio but mark for possible skipping later
+                # Remove strict has_audio check to increase throughput
+                # if not vid.get("has_audio", False):
+                #     continue
 
                 if post.score < thresh["score"] or post.num_comments < thresh["comments"]:
                     continue
@@ -172,7 +170,7 @@ async def fetch_reddit_videos(limit_per_sub=50) -> List[Tuple[str, str, str]]:
 
     return results
 
-async def download_file(url: str, output_path: str, max_retries=3) -> Optional[str]:
+async def download_file(url: str, output_path: str, max_retries=5) -> Optional[str]:
     headers = {
         "User-Agent": random.choice(USER_AGENTS),
         "Referer": "https://www.reddit.com/",
@@ -182,7 +180,7 @@ async def download_file(url: str, output_path: str, max_retries=3) -> Optional[s
     for attempt in range(1, max_retries + 1):
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, timeout=60) as resp:
+                async with session.get(url, headers=headers, timeout=90) as resp:
                     if resp.status != 200:
                         logger.warning(f"[{resp.status}] {url}")
                         await asyncio.sleep(1)
@@ -203,21 +201,21 @@ async def download_file(url: str, output_path: str, max_retries=3) -> Optional[s
     logger.error(f"Max retries reached. Failed to download: {url}")
     return None
 
-# Critical logic call to suitability filter
+# Import your updated is_video_suitable from editor.py
 from editor import is_video_suitable
 
 async def scrape_video() -> Optional[Tuple[str, str]]:
     while True:
         videos = await fetch_reddit_videos()
         if not videos:
-            logger.warning("No suitable posts found, retrying instantly.")
+            logger.warning("No suitable posts found, retrying immediately.")
             continue
 
         random.shuffle(videos)
         for vid_id, title, url in videos:
             logger.info(f"Checking: https://redd.it/{vid_id}")
             output_path = os.path.join(DOWNLOAD_DIR, f"{vid_id}.mp4")
-            await asyncio.sleep(random.uniform(1.5, 3.5))  # Still semi-human
+            await asyncio.sleep(random.uniform(1, 2))  # reduced sleep for speed
 
             path = await download_file(url, output_path)
             if path and is_video_suitable(path):
