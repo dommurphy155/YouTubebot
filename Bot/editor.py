@@ -4,46 +4,59 @@ import ffmpeg
 import random
 import asyncio
 
+INPUT_DIR = "downloads"
+OUTPUT_DIR = "ready"
+
+# Loosened constraints to allow more borderline videos
+MIN_DURATION = 15
+MAX_DURATION = 90
+TARGET_RESOLUTION = (1080, 1920)
+CRF = 28
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] editor.py: %(message)s",
     handlers=[logging.StreamHandler()]
 )
 
-INPUT_DIR = "downloads"
-OUTPUT_DIR = "ready"
-
-# Loosened constraints
-MIN_DURATION = 15
-MAX_DURATION = 90
-TARGET_RESOLUTION = (1080, 1920)
-CRF = 28
 
 def get_video_duration(input_path):
     try:
         probe = ffmpeg.probe(input_path)
-        return float(probe['format']['duration'])
+        video_stream = next(
+            (stream for stream in probe['streams'] if stream['codec_type'] == 'video'),
+            None
+        )
+        return float(probe['format']['duration']) if video_stream else None
     except Exception as e:
-        logging.warning(f"⚠️ Could not probe duration: {e} — proceeding anyway")
+        logging.warning(f"⚠️ Could not probe duration: {e}")
         return None
 
+
 def is_video_suitable(file_path: str) -> bool:
-    """Used by scraper.py to prefilter videos."""
     try:
         probe = ffmpeg.probe(file_path)
-        duration = float(probe['format']['duration'])
-        width = int(probe['streams'][0]['width'])
-        height = int(probe['streams'][0]['height'])
+        video_stream = next(
+            (s for s in probe["streams"] if s["codec_type"] == "video"),
+            None
+        )
+        if not video_stream:
+            return False
+        duration = float(probe["format"]["duration"])
+        width = int(video_stream["width"])
+        height = int(video_stream["height"])
+
         if duration < MIN_DURATION or duration > MAX_DURATION:
             return False
         if width < 640 or height < 360:
             return False
         return True
     except Exception as e:
-        logging.warning(f"⚠️ is_video_suitable failed: {e} — allowing video")
-        return True  # Let it through instead of rejecting
+        logging.warning(f"⚠️ is_video_suitable failed: {e} — allowing video through")
+        return True
 
-def get_best_subclip(duration, min_duration, max_duration) -> tuple:
+
+def get_best_subclip(duration, min_duration, max_duration):
     if not duration or duration <= min_duration:
         return 0, min(max_duration, duration or max_duration)
     if duration <= max_duration:
@@ -54,9 +67,10 @@ def get_best_subclip(duration, min_duration, max_duration) -> tuple:
     end = start + window
     return round(start, 2), round(min(end, duration), 2)
 
+
 def apply_ffmpeg_filters(input_path, output_path, start_time, end_time):
     try:
-        logging.info("🎞️ Applying main filters...")
+        logging.info(f"🎞️ FFmpeg main render: {start_time}s → {end_time}s")
         (
             ffmpeg
             .input(input_path, ss=start_time, to=end_time)
@@ -78,8 +92,8 @@ def apply_ffmpeg_filters(input_path, output_path, start_time, end_time):
         logging.info(f"✅ Rendered successfully to: {output_path}")
         return True
     except ffmpeg.Error as e:
-        logging.warning("⚠️ FFmpeg failed, attempting fallback...")
-        logging.warning(e.stderr.decode())
+        logging.warning("⚠️ FFmpeg filters failed. Retrying with raw fallback...")
+        logging.warning(e.stderr.decode(errors="ignore"))
         try:
             (
                 ffmpeg
@@ -95,11 +109,16 @@ def apply_ffmpeg_filters(input_path, output_path, start_time, end_time):
                 .overwrite_output()
                 .run(capture_stdout=True, capture_stderr=True)
             )
-            logging.info(f"✅ Fallback render successful: {output_path}")
+            logging.info(f"✅ Fallback render succeeded: {output_path}")
             return True
-        except Exception as e2:
-            logging.error(f"❌ Fallback failed: {e2}")
+        except ffmpeg.Error as e2:
+            logging.error("❌ Fallback failed")
+            logging.error(e2.stderr.decode(errors="ignore"))
             return False
+        except Exception as e3:
+            logging.error(f"❌ Unexpected fallback failure: {e3}")
+            return False
+
 
 def process_video(file_path):
     try:
@@ -110,29 +129,31 @@ def process_video(file_path):
         duration = get_video_duration(file_path) or MAX_DURATION
         start, end = get_best_subclip(duration, MIN_DURATION, MAX_DURATION)
 
-        logging.info(f"✂️ Trimming: {start}s to {end}s (of {duration}s)")
+        logging.info(f"✂️ Trimming video from {start}s to {end}s (Total: {duration}s)")
         success = apply_ffmpeg_filters(file_path, output_path, start, end)
 
-        if not success:
-            raise RuntimeError("FFmpeg failed.")
+        if not success or not os.path.exists(output_path):
+            raise RuntimeError("FFmpeg failed or output missing.")
 
         return output_path
     except Exception as e:
-        logging.error(f"❌ process_video error: {str(e)}")
+        logging.error(f"❌ process_video error: {e}")
         return None
+
 
 async def edit_video(file_path: str) -> str:
     """Async-compatible wrapper so main.py can call edit_video(...)"""
-    logging.info(f"🧠 Launching async edit_video for: {file_path}")
+    logging.info(f"🧠 edit_video started for: {file_path}")
     output = await asyncio.to_thread(process_video, file_path)
     if output:
-        logging.info(f"📤 edit_video done: {output}")
+        logging.info(f"📤 edit_video completed: {output}")
     else:
         logging.warning(f"⚠️ edit_video failed for: {file_path}")
     return output
 
+
 def main():
-    logging.info("🚀 Starting editor.py...")
+    logging.info("🚀 editor.py started...")
     for file in os.listdir(INPUT_DIR):
         if not file.endswith(".mp4"):
             continue
@@ -141,7 +162,8 @@ def main():
         if output_path:
             logging.info(f"📦 Final video ready: {output_path}")
         else:
-            logging.warning(f"⚠️ Skipped: {file}")
+            logging.warning(f"⚠️ Skipped due to failure: {file}")
+
 
 if __name__ == "__main__":
     main()
