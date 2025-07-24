@@ -12,10 +12,11 @@ logging.basicConfig(
 INPUT_DIR = "downloads"
 OUTPUT_DIR = "ready"
 
-MIN_DURATION = 20
-MAX_DURATION = 60
+# Loosen duration requirements to allow more videos through
+MIN_DURATION = 15  # lowered from 20
+MAX_DURATION = 90  # raised from 60
 TARGET_RESOLUTION = (1080, 1920)  # vertical
-CRF = 25
+CRF = 28  # slightly higher CRF to allow faster encoding if needed
 
 def get_video_duration(input_path):
     try:
@@ -23,19 +24,19 @@ def get_video_duration(input_path):
         duration = float(probe['format']['duration'])
         return duration
     except Exception as e:
-        logging.error(f"Error probing video duration: {e}")
-        return None
+        logging.warning(f"Warning: Could not probe video duration: {e}. Processing anyway.")
+        return None  # allow video even if duration probe fails
 
 def get_best_subclip(duration, min_duration: int, max_duration: int) -> tuple:
-    """Find the best 20–60s subclip, ideally centered on the most active segment (smart fallback)."""
-    if duration is None:
-        return 0, 0
+    if duration is None or duration <= min_duration:
+        # No duration or too short, just take first max_duration seconds or full clip
+        return 0, max_duration
     if duration <= max_duration:
         return 0, duration
 
     window = random.randint(min_duration, max_duration)
     mid = duration / 2
-    start = max(0, mid - window / 2 + random.uniform(-3, 3))
+    start = max(0, mid - window / 2 + random.uniform(-5, 5))  # add more randomness to subclip selection
     end = start + window
     return round(start, 2), round(min(end, duration), 2)
 
@@ -45,10 +46,11 @@ def apply_ffmpeg_filters(input_path, output_path, start_time, end_time):
         (
             ffmpeg
             .input(input_path, ss=start_time, to=end_time)
-            .filter('scale', TARGET_RESOLUTION[0], -1)
+            # Scale by height to maintain aspect ratio better, then crop to target resolution
+            .filter('scale', -1, TARGET_RESOLUTION[1])
             .filter('crop', TARGET_RESOLUTION[0], TARGET_RESOLUTION[1])
-            .filter('eq', contrast=1.1, brightness=0.05, saturation=1.2)  # AI-inspired enhancements
-            .filter('unsharp', 5, 5, 1.0, 5, 5, 0.0)  # Sharpening
+            .filter('eq', contrast=1.05, brightness=0.02, saturation=1.1)  # softer enhancements
+            .filter('unsharp', 3, 3, 0.7, 3, 3, 0.0)  # less aggressive sharpening
             .output(
                 output_path,
                 vcodec='libx264',
@@ -63,19 +65,28 @@ def apply_ffmpeg_filters(input_path, output_path, start_time, end_time):
         logging.info(f"Rendered successfully to {output_path}")
         return True
     except ffmpeg.Error as e:
-        logging.error("FFmpeg error:")
-        logging.error(e.stderr.decode())
-        return False
-
-def is_video_suitable(input_path, min_duration=15, max_duration=90):
-    """
-    Check if video duration fits within the allowed range for processing.
-    Returns True if suitable, False otherwise.
-    """
-    duration = get_video_duration(input_path)
-    if duration is None:
-        return False
-    return min_duration <= duration <= max_duration
+        logging.warning("FFmpeg error, retrying with minimal filters...")
+        logging.warning(e.stderr.decode())
+        try:
+            (
+                ffmpeg
+                .input(input_path, ss=start_time, to=end_time)
+                .output(
+                    output_path,
+                    vcodec='libx264',
+                    acodec='aac',
+                    crf=30,
+                    preset='veryfast',
+                    movflags='+faststart'
+                )
+                .overwrite_output()
+                .run(capture_stdout=True, capture_stderr=True)
+            )
+            logging.info(f"Rendered fallback successfully to {output_path}")
+            return True
+        except Exception as e2:
+            logging.error(f"Fallback ffmpeg render failed: {e2}")
+            return False
 
 def process_video(file_path):
     try:
@@ -84,9 +95,9 @@ def process_video(file_path):
         output_path = os.path.join(OUTPUT_DIR, f"{name}_edited.mp4")
 
         duration = get_video_duration(file_path)
-        if duration is None or duration == 0:
-            logging.error(f"Could not get duration for {file_path}")
-            return None
+        if duration is None:
+            logging.warning(f"Unknown duration for {file_path}, proceeding with default max duration.")
+            duration = MAX_DURATION
 
         start, end = get_best_subclip(duration, MIN_DURATION, MAX_DURATION)
         logging.info(f"Selected subclip: {start}s to {end}s (original: {duration}s)")
