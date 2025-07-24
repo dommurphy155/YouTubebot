@@ -76,20 +76,20 @@ def get_reddit():
     )
 
 def is_valid_video_post(post) -> bool:
-    if getattr(post, "is_gallery", False) or getattr(post, "is_video", None) is False:
+    if getattr(post, "is_gallery", False) or not getattr(post, "is_video", True):
         return False
 
     url = post.url.lower()
     if any(url.endswith(ext) for ext in EXCLUDED_EXTENSIONS):
         return False
 
-    duration = 0
     try:
-        # Option A: fallback to preview duration if main reddit_video is unavailable
         if post.media and "reddit_video" in post.media:
             duration = post.media["reddit_video"].get("duration", 0)
         elif post.media and "reddit_video_preview" in post.media:
             duration = post.media["reddit_video_preview"].get("duration", 0)
+        else:
+            return False
     except Exception as e:
         logger.warning(f"Error extracting video duration: {e}")
         return False
@@ -151,7 +151,7 @@ def cleanup_files(paths: List[str]):
     for p in paths:
         try:
             os.remove(p)
-        except:
+        except Exception:
             pass
 
 load_state()
