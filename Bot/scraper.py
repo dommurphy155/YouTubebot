@@ -78,18 +78,32 @@ def get_reddit():
 def is_valid_video_post(post) -> bool:
     if getattr(post, "is_gallery", False) or getattr(post, "is_video", None) is False:
         return False
+
     url = post.url.lower()
     if any(url.endswith(ext) for ext in EXCLUDED_EXTENSIONS):
         return False
-    duration = getattr(post, "media", {}).get("reddit_video", {}).get("duration", 0)
+
+    duration = 0
+    try:
+        # Option A: fallback to preview duration if main reddit_video is unavailable
+        if post.media and "reddit_video" in post.media:
+            duration = post.media["reddit_video"].get("duration", 0)
+        elif post.media and "reddit_video_preview" in post.media:
+            duration = post.media["reddit_video_preview"].get("duration", 0)
+    except Exception as e:
+        logger.warning(f"Error extracting video duration: {e}")
+        return False
+
     if not (MIN_DURATION <= duration <= MAX_DURATION):
         return False
+
     return True
 
 async def fetch_candidates(limit=100) -> List[Tuple[str, str, str]]:
     reddit = get_reddit()
     results = []
     random.shuffle(REDDIT_SUBREDDITS)
+
     for sub in REDDIT_SUBREDDITS:
         for sort in ["hot", "new"]:
             retries = 0
@@ -99,6 +113,7 @@ async def fetch_candidates(limit=100) -> List[Tuple[str, str, str]]:
                         None, lambda: list(getattr(reddit.subreddit(sub), sort)(limit=limit))
                     )
                     thresh = SUBREDDIT_THRESHOLDS.get(sub, DEFAULT_THRESHOLDS)
+
                     for post in posts:
                         if post.id in seen_post_ids or post.url in blacklist_urls:
                             continue
@@ -106,6 +121,7 @@ async def fetch_candidates(limit=100) -> List[Tuple[str, str, str]]:
                             continue
                         if not is_valid_video_post(post):
                             continue
+
                         logger.info(f"Found candidate: {post.title} ({post.url})")
                         seen_post_ids.add(post.id)
                         results.append((post.url, post.title, post.id))
