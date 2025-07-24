@@ -162,10 +162,12 @@ async def download_file(url: str, output_path: str, max_retries=3) -> Optional[s
 from editor import is_video_suitable
 
 async def scrape_video() -> Optional[Tuple[str, str]]:
+    attempt = 0
     while True:
         videos = await fetch_reddit_videos()
         if not videos:
-            logger.warning("No videos fetched. Retrying without delay.")
+            attempt += 1
+            logger.warning(f"No suitable videos found. Retry attempt #{attempt}")
             continue
 
         random.shuffle(videos)
@@ -186,7 +188,7 @@ async def scrape_video() -> Optional[Tuple[str, str]]:
                 except Exception as e:
                     logger.error(f"Delete failed: {e}")
 
-        logger.info("Finished current batch. Immediately restarting...")
+        logger.info("Finished current batch. Instantly retrying...")
 
 def cleanup_files(paths: List[str]):
     for p in paths:
