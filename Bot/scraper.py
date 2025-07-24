@@ -9,6 +9,10 @@ import praw
 import aiohttp
 from prawcore import ServerError, RequestException, ResponseException
 
+# Suppress PRAW async warnings
+logging.getLogger("praw").setLevel(logging.ERROR)
+logging.getLogger("prawcore").setLevel(logging.ERROR)
+
 logger = logging.getLogger("TelegramVideoBot")
 logging.basicConfig(level=logging.INFO)
 
