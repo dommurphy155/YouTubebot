@@ -14,14 +14,10 @@ REDDIT_PASSWORD = os.environ["REDDIT_PASSWORD"]
 
 # Subreddits to scrape (no URLs — just slugs)
 SOURCE_SUBREDDITS = [
-    "PublicFreakout",
-    "nextfuckinglevel",
-    "Unexpected",
-    "WatchPeopleDieInside",
-    "instant_regret",
-    "IdiotsInCars",
-    "holdmyjuicebox",
-    "blursedimages",
+    "PublicFreakout", "Unexpected", "WatchPeopleDieInside", "NextFuckingLevel",
+    "instant_regret", "holdmyjuicebox", "blursedimages", "IdiotsInCars",
+    "youtubehaiku", "ContentCreators", "NewTubers", "AskReddit", "AITA", "nosleep"
+    
 ]
 
 # Video filtering rules
