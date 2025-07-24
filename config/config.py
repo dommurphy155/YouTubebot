@@ -1,16 +1,22 @@
 import os
 from datetime import timedelta
 
-# Telegram configuration (from environment)
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+def require_env(var_name: str) -> str:
+    value = os.environ.get(var_name)
+    if value is None:
+        raise EnvironmentError(f"Missing required environment variable: {var_name}")
+    return value
 
-# Reddit API configuration (from environment)
-REDDIT_CLIENT_ID = os.environ["REDDIT_CLIENT_ID"]
-REDDIT_CLIENT_SECRET = os.environ["REDDIT_CLIENT_SECRET"]
-REDDIT_USER_AGENT = os.environ["REDDIT_USER_AGENT"]
-REDDIT_USERNAME = os.environ["REDDIT_USERNAME"]
-REDDIT_PASSWORD = os.environ["REDDIT_PASSWORD"]
+# Telegram configuration
+TELEGRAM_TOKEN = require_env("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = require_env("TELEGRAM_CHAT_ID")
+
+# Reddit API configuration
+REDDIT_CLIENT_ID = require_env("REDDIT_CLIENT_ID")
+REDDIT_CLIENT_SECRET = require_env("REDDIT_CLIENT_SECRET")
+REDDIT_USER_AGENT = require_env("REDDIT_USER_AGENT")
+REDDIT_USERNAME = require_env("REDDIT_USERNAME")
+REDDIT_PASSWORD = require_env("REDDIT_PASSWORD")
 
 # Subreddits to scrape (no URLs — just slugs)
 SOURCE_SUBREDDITS = [
