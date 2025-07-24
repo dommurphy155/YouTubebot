@@ -7,7 +7,7 @@ from typing import Optional, Tuple, List
 
 import praw
 import aiohttp
-from prawcore import ServerError, RequestException, ResponseException, OAuthException, ResponseCodeException
+from prawcore import ServerError, RequestException, ResponseException, Forbidden, NotFound, BadRequest
 
 # Suppress PRAW async warnings
 logging.getLogger("praw").setLevel(logging.ERROR)
@@ -34,8 +34,6 @@ DEFAULT_THRESHOLDS = {"score": 1000, "comments": 1000}
 REDDIT_CLIENT_ID = os.environ["REDDIT_CLIENT_ID"]
 REDDIT_CLIENT_SECRET = os.environ["REDDIT_CLIENT_SECRET"]
 REDDIT_USER_AGENT = os.environ["REDDIT_USER_AGENT"]
-REDDIT_USERNAME = os.environ.get("REDDIT_USERNAME")
-REDDIT_PASSWORD = os.environ.get("REDDIT_PASSWORD")
 
 STATE_FILE = os.path.join(DOWNLOAD_DIR, "scraper_state.json")
 seen_post_ids = set()
@@ -75,47 +73,33 @@ def save_state():
         logger.error(f"Error saving state: {e}")
 
 def get_reddit():
-    if REDDIT_USERNAME and REDDIT_PASSWORD:
-        # Use authenticated Reddit instance with token refresh handling
-        reddit = praw.Reddit(
-            client_id=REDDIT_CLIENT_ID,
-            client_secret=REDDIT_CLIENT_SECRET,
-            user_agent=REDDIT_USER_AGENT,
-            username=REDDIT_USERNAME,
-            password=REDDIT_PASSWORD
-        )
-    else:
-        reddit = praw.Reddit(
-            client_id=REDDIT_CLIENT_ID,
-            client_secret=REDDIT_CLIENT_SECRET,
-            user_agent=REDDIT_USER_AGENT
-        )
-    return reddit
+    return praw.Reddit(
+        client_id=REDDIT_CLIENT_ID,
+        client_secret=REDDIT_CLIENT_SECRET,
+        user_agent=REDDIT_USER_AGENT,
+        check_for_async=False,
+    )
 
 def is_valid_video_post(post) -> bool:
+    if getattr(post, "is_gallery", False) or not getattr(post, "is_video", True):
+        return False
+
+    url = post.url.lower()
+    if any(url.endswith(ext) for ext in EXCLUDED_EXTENSIONS):
+        return False
+
     try:
-        if getattr(post, "is_gallery", False) or not getattr(post, "is_video", True):
-            return False
-
-        url = post.url.lower()
-        if any(url.endswith(ext) for ext in EXCLUDED_EXTENSIONS):
-            return False
-
-        duration = 0
         if post.media and "reddit_video" in post.media:
             duration = post.media["reddit_video"].get("duration", 0)
         elif post.media and "reddit_video_preview" in post.media:
             duration = post.media["reddit_video_preview"].get("duration", 0)
         else:
-            # Try to parse duration from secure_media or fallback
-            if post.secure_media and "reddit_video" in post.secure_media:
-                duration = post.secure_media["reddit_video"].get("duration", 0)
-
-        if not (MIN_DURATION <= duration <= MAX_DURATION):
             return False
-
     except Exception as e:
-        logger.warning(f"Error validating video post {getattr(post, 'id', 'unknown')}: {e}")
+        logger.warning(f"Error extracting video duration: {e}")
+        return False
+
+    if not (MIN_DURATION <= duration <= MAX_DURATION):
         return False
 
     return True
@@ -123,13 +107,12 @@ def is_valid_video_post(post) -> bool:
 async def fetch_candidates(limit=100) -> List[Tuple[str, str, str]]:
     reddit = get_reddit()
     results = []
-    subreddits = REDDIT_SUBREDDITS.copy()
-    random.shuffle(subreddits)
+    random.shuffle(REDDIT_SUBREDDITS)
 
-    for sub in subreddits:
+    for sub in REDDIT_SUBREDDITS:
         for sort in ["hot", "new"]:
             retries = 0
-            while retries < 5:
+            while retries < 3:
                 try:
                     posts = await asyncio.get_event_loop().run_in_executor(
                         None, lambda: list(getattr(reddit.subreddit(sub), sort)(limit=limit))
@@ -137,7 +120,7 @@ async def fetch_candidates(limit=100) -> List[Tuple[str, str, str]]:
                     thresh = SUBREDDIT_THRESHOLDS.get(sub, DEFAULT_THRESHOLDS)
 
                     for post in posts:
-                        if post.id in seen_post_ids or post.url in blacklist_urls or post.url in download_failures:
+                        if post.id in seen_post_ids or post.url in blacklist_urls:
                             continue
                         if post.score < thresh["score"] and post.num_comments < thresh["comments"]:
                             continue
@@ -151,15 +134,13 @@ async def fetch_candidates(limit=100) -> List[Tuple[str, str, str]]:
                             save_state()
                             return results
                     break
-                except (ServerError, RequestException, ResponseException, OAuthException, ResponseCodeException) as e:
+                except (ServerError, RequestException, ResponseException, Forbidden, NotFound, BadRequest) as e:
                     retries += 1
-                    wait = 2 ** retries
-                    logger.warning(f"Reddit API error on /r/{sub} ({sort}): {e}, retrying in {wait}s...")
-                    await asyncio.sleep(wait)
+                    logger.warning(f"Reddit API error on /r/{sub} ({sort}): {e}, retrying...")
+                    await asyncio.sleep(1 + retries)
                 except Exception as e:
                     logger.error(f"Unexpected error scraping /r/{sub}: {e}")
                     break
-    save_state()
     return results
 
 async def scrape_video() -> Optional[Tuple[str, str]]:
@@ -170,7 +151,7 @@ async def scrape_video() -> Optional[Tuple[str, str]]:
             logger.info(f"📥 Scrape picked: {pid} | {url}")
             return url, title
         logger.info("No candidates found, retrying immediately...")
-        await asyncio.sleep(0.1)  # aggressive retry, no 60s sleep
+        await asyncio.sleep(0.3)
 
 def cleanup_files(paths: List[str]):
     for p in paths:
