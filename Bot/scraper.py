@@ -162,20 +162,17 @@ async def download_file(url: str, output_path: str, max_retries=3) -> Optional[s
 from editor import is_video_suitable
 
 async def scrape_video() -> Optional[Tuple[str, str]]:
-    attempt = 0
     while True:
         videos = await fetch_reddit_videos()
         if not videos:
-            attempt += 1
-            logger.warning(f"No suitable videos found. Retry attempt #{attempt}")
+            logger.warning("No suitable posts found, retrying instantly.")
             continue
 
         random.shuffle(videos)
-
         for vid_id, title, url in videos:
             logger.info(f"Checking: https://redd.it/{vid_id}")
             output_path = os.path.join(DOWNLOAD_DIR, f"{vid_id}.mp4")
-            await asyncio.sleep(random.uniform(2.5, 6.5))  # Humanlike
+            await asyncio.sleep(random.uniform(1.5, 3.5))  # Still semi-human
 
             path = await download_file(url, output_path)
             if path and is_video_suitable(path):
@@ -188,7 +185,7 @@ async def scrape_video() -> Optional[Tuple[str, str]]:
                 except Exception as e:
                     logger.error(f"Delete failed: {e}")
 
-        logger.info("Finished current batch. Instantly retrying...")
+        logger.info("No usable videos from this batch. Looping again...")
 
 def cleanup_files(paths: List[str]):
     for p in paths:
@@ -213,5 +210,5 @@ async def check_ip_reputation():
         logger.warning(f"IP check error: {e}")
         return False
 
-# Initialize state on module load
+# Load scraper state on boot
 load_state()
