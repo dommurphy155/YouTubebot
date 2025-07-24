@@ -117,7 +117,7 @@ def get_video_duration(video_path: str) -> float:
         logger.warning(f"Failed to get video duration: {e}")
         return 0.0
 
-# === MAIN EDIT FUNCTION (NOW WITH ERROR LOG FILE SAVE) ===
+# === MAIN EDIT FUNCTION (NOW WITH ERROR LOG FILE SAVE AND PRINT) ===
 async def edit_video(input_path: str) -> str:
     output_path = os.path.join(OUTPUT_DIR, os.path.basename(input_path))
     total_duration = get_video_duration(input_path)
@@ -204,6 +204,7 @@ async def edit_video(input_path: str) -> str:
 
         logger.error(f"Edit failed: {error_text}")
         logger.info(f"FFmpeg error log saved to {error_log_path}")
+        print(f"FFmpeg error log saved to {error_log_path}")
 
         if os.path.exists(output_path):
             os.remove(output_path)
