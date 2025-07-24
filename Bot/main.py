@@ -25,6 +25,10 @@ running = True
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
+if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+    logger.critical("TELEGRAM_TOKEN and TELEGRAM_CHAT_ID must be set in environment.")
+    sys.exit(1)
+
 # yt-dlp binary path (inside venv)
 YTDLP_PATH = "/home/ubuntu/YouTubebot/venv/bin/yt-dlp"
 
@@ -79,21 +83,32 @@ async def main_loop():
     update_ytdlp()
 
     app = await start_telegram_bot()
+
     try:
         while running:
             try:
                 result = await scraper.scrape_video()
                 if not result:
-                    logger.info("No suitable videos found. Waiting...")
+                    logger.info("No suitable videos found. Waiting 1 minute before retry.")
                     await asyncio.sleep(60 + random.uniform(5, 15))
                     continue
 
-                video_path, _title = result  # _title is optional, for future captioning
+                video_path, title = result  # title currently unused, reserved for captioning
+
+                # Sanity check: double check video suitability with editor's is_video_suitable sync function
+                if not editor.is_video_suitable(video_path):
+                    logger.info(f"Video {video_path} deemed unsuitable by editor check. Cleaning up.")
+                    scraper.cleanup_files([video_path])
+                    continue
+
                 edited_path = await editor.edit_video(video_path)
                 await uploader.upload_video(edited_path)
 
                 scraper.cleanup_files([video_path, edited_path])
-                await asyncio.sleep(random.uniform(10, 30))  # Anti-rate-limiting
+
+                # Random short sleep to avoid rate limits or rapid repeats
+                await asyncio.sleep(random.uniform(10, 30))
+
             except Exception as e:
                 logger.error(f"Main loop error: {e}")
                 await asyncio.sleep(30)
