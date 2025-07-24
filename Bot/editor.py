@@ -84,7 +84,8 @@ def apply_ffmpeg_filters(input_path, output_path, start_time, end_time):
                 acodec='aac',
                 crf=CRF,
                 preset='fast',
-                movflags='+faststart'
+                movflags='+faststart',
+                shortest=None  # ensure audio matches trimmed video length
             )
             .overwrite_output()
             .run(capture_stdout=True, capture_stderr=True)
@@ -104,7 +105,8 @@ def apply_ffmpeg_filters(input_path, output_path, start_time, end_time):
                     acodec='aac',
                     crf=30,
                     preset='veryfast',
-                    movflags='+faststart'
+                    movflags='+faststart',
+                    shortest=None
                 )
                 .overwrite_output()
                 .run(capture_stdout=True, capture_stderr=True)
@@ -154,10 +156,14 @@ async def edit_video(file_path: str) -> str:
 
 def main():
     logging.info("🚀 editor.py started...")
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     for file in os.listdir(INPUT_DIR):
-        if not file.endswith(".mp4"):
+        if not file.lower().endswith(".mp4"):
             continue
         input_path = os.path.join(INPUT_DIR, file)
+        if not is_video_suitable(input_path):
+            logging.warning(f"⚠️ Video not suitable, skipping: {file}")
+            continue
         output_path = process_video(input_path)
         if output_path:
             logging.info(f"📦 Final video ready: {output_path}")
