@@ -67,6 +67,16 @@ def apply_ffmpeg_filters(input_path, output_path, start_time, end_time):
         logging.error(e.stderr.decode())
         return False
 
+def is_video_suitable(input_path, min_duration=15, max_duration=90):
+    """
+    Check if video duration fits within the allowed range for processing.
+    Returns True if suitable, False otherwise.
+    """
+    duration = get_video_duration(input_path)
+    if duration is None:
+        return False
+    return min_duration <= duration <= max_duration
+
 def process_video(file_path):
     try:
         filename = os.path.basename(file_path)
