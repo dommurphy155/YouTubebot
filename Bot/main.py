@@ -32,12 +32,10 @@ if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
 alert_bot = Bot(token=TELEGRAM_TOKEN)
 YTDLP_PATH = "/home/ubuntu/YouTubebot/venv/bin/yt-dlp"
 
-
 # --- Graceful Shutdown ---
 def handle_shutdown(signum, frame):
     logger.info(f"Shutdown signal ({signum}) received.")
     shutdown_event.set()
-
 
 # --- yt-dlp Updater ---
 def update_ytdlp():
@@ -50,7 +48,6 @@ def update_ytdlp():
     except Exception as e:
         logger.error(f"yt-dlp update exception: {e}")
 
-
 # --- Telegram Alert Wrapper ---
 async def send_alert_message(text: str):
     try:
@@ -62,7 +59,6 @@ async def send_alert_message(text: str):
         )
     except Exception as e:
         logger.error(f"Failed to send alert message: {e}")
-
 
 # --- Telegram Commands ---
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -84,7 +80,6 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"/status error: {e}")
 
-
 async def send_startup_alert():
     msg = (
         f"🚀 *Bot Startup Alert*\n\n"
@@ -97,7 +92,6 @@ async def send_startup_alert():
     )
     await send_alert_message(msg)
 
-
 # --- Telegram Bot Lifecycle ---
 async def start_telegram_bot():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
@@ -108,12 +102,10 @@ async def start_telegram_bot():
     await send_startup_alert()
     return app
 
-
 async def stop_telegram_bot(app):
     await app.stop()
     await app.shutdown()
     logger.info("Telegram bot stopped.")
-
 
 # --- Core Loop ---
 async def main_loop():
@@ -123,7 +115,6 @@ async def main_loop():
     try:
         while not shutdown_event.is_set():
             try:
-                # Aggressive retry until something valid is found
                 result = None
                 attempts = 0
                 while not result and not shutdown_event.is_set():
@@ -158,11 +149,23 @@ async def main_loop():
                     scraper.cleanup_files([video_path])
                     continue
 
+                # --- ✅ VALIDATE edited_path before uploading ---
+                if not edited_path or not os.path.exists(edited_path):
+                    logger.error(f"Invalid edited path: {edited_path}")
+                    await send_alert_message(
+                        f"❗ *Render Error*\n"
+                        f"Output missing or failed.\n"
+                        f"Title: `{title}`\n"
+                        f"Input: `{video_path}`\n"
+                        f"Output: `{edited_path}`"
+                    )
+                    scraper.cleanup_files([video_path])
+                    continue
+
                 await uploader.upload_video(edited_path)
 
                 scraper.cleanup_files([video_path, edited_path])
 
-                # Wait before restarting loop
                 for _ in range(random.randint(10, 30)):
                     if shutdown_event.is_set():
                         return
@@ -180,7 +183,6 @@ async def main_loop():
     finally:
         await stop_telegram_bot(app)
 
-
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, handle_shutdown)
     signal.signal(signal.SIGTERM, handle_shutdown)
@@ -190,6 +192,7 @@ if __name__ == "__main__":
     except Exception as e:
         tb = traceback.format_exc()
         logger.critical(f"Fatal bot error: {e}")
+
         async def crash_alert():
             try:
                 await send_alert_message(
@@ -198,5 +201,6 @@ if __name__ == "__main__":
                 )
             except:
                 pass
+
         asyncio.run(crash_alert())
         sys.exit(1)
