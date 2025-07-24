@@ -29,38 +29,35 @@ SUBREDDIT_THRESHOLDS = {
     "PublicFreakout": {"score": 3000, "comments": 5000},
     "Unexpected": {"score": 2000, "comments": 4000},
 }
-
-DEFAULT_THRESHOLDS = {"score": 1500, "comments": 3000}
+DEFAULT_THRESHOLDS = {"score": 1000, "comments": 1000}  # Loosened
 
 REDDIT_CLIENT_ID = os.environ["REDDIT_CLIENT_ID"]
 REDDIT_CLIENT_SECRET = os.environ["REDDIT_CLIENT_SECRET"]
 REDDIT_USER_AGENT = os.environ["REDDIT_USER_AGENT"]
-HUGGINGFACE_API_KEY = os.environ.get("HUGGINGFACE_API_KEY")
 
 STATE_FILE = os.path.join(DOWNLOAD_DIR, "scraper_state.json")
-
 seen_post_ids = set()
 blacklist_urls = set()
 download_failures = set()
 
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Safari/605.1.15",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64)...",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5)...",
+    "Mozilla/5.0 (X11; Linux x86_64)...",
 ]
 
 def load_state():
     global seen_post_ids, blacklist_urls, download_failures
     if os.path.exists(STATE_FILE):
         try:
-            with open(STATE_FILE, "r") as f:
+            with open(STATE_FILE) as f:
                 data = json.load(f)
-            seen_post_ids = set(data.get("seen_post_ids", []))
-            blacklist_urls = set(data.get("blacklist_urls", []))
-            download_failures = set(data.get("download_failures", []))
-            logger.info("Loaded scraper state from file.")
+                seen_post_ids.update(data.get("seen_post_ids", []))
+                blacklist_urls.update(data.get("blacklist_urls", []))
+                download_failures.update(data.get("download_failures", []))
+                logger.info(f"Loaded state file: {STATE_FILE}")
         except Exception as e:
-            logger.warning(f"Failed to load scraper state: {e}")
+            logger.warning(f"Error loading state: {e}")
 
 def save_state():
     try:
@@ -70,179 +67,85 @@ def save_state():
                 "blacklist_urls": list(blacklist_urls),
                 "download_failures": list(download_failures)
             }, f)
-        logger.info("Saved scraper state to file.")
     except Exception as e:
-        logger.error(f"Failed to save scraper state: {e}")
+        logger.error(f"Error saving state: {e}")
 
-def get_reddit_instance():
+def get_reddit():
     return praw.Reddit(
         client_id=REDDIT_CLIENT_ID,
         client_secret=REDDIT_CLIENT_SECRET,
         user_agent=REDDIT_USER_AGENT
     )
 
-async def async_subreddit_top(subreddit, limit):
-    return await asyncio.get_event_loop().run_in_executor(
-        None, lambda: list(subreddit.top(time_filter="week", limit=limit))
-    )
-
-async def huggingface_filter(text: str) -> bool:
-    if not HUGGINGFACE_API_KEY:
-        logger.warning("Hugging Face API key not set, skipping HF filter.")
-        return True
-
-    url = "https://api-inference.huggingface.co/models/facebook/bart-large-mnli"
-    headers = {
-        "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    data = {
-        "inputs": text,
-        "parameters": {"candidate_labels": ["funny", "viral", "fail", "epic", "crazy", "shocking", "wow", "fun", "interesting"]},
-        "options": {"wait_for_model": True}
-    }
-
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.post(url, headers=headers, json=data, timeout=20) as resp:
-                if resp.status != 200:
-                    logger.warning(f"Hugging Face API error {resp.status}")
-                    return True
-                result = await resp.json()
-                scores = result.get("scores", [])
-                if not scores:
-                    return True
-                return max(scores) > 0.5
-        except Exception as e:
-            logger.error(f"Hugging Face filter exception: {e}")
-            return True
-
-async def fetch_reddit_videos(limit_per_sub=100) -> List[Tuple[str, str, str]]:
-    reddit = get_reddit_instance()
+async def fetch_candidates(limit=100):
+    reddit = get_reddit()
     results = []
-    random.shuffle(REDDIT_SUBREDDITS)
-
     for sub in REDDIT_SUBREDDITS:
         try:
-            posts = await async_subreddit_top(reddit.subreddit(sub), limit_per_sub)
+            posts = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: list(reddit.subreddit(sub).hot(limit=limit))
+            )
             thresh = SUBREDDIT_THRESHOLDS.get(sub, DEFAULT_THRESHOLDS)
-
             for post in posts:
-                if post.id in seen_post_ids:
+                if post.id in seen_post_ids or post.url in blacklist_urls:
                     continue
-
-                if not post.is_video or not post.media:
-                    logger.info(f"Post {post.id} skipped: not video or media missing.")
+                if not hasattr(post, "is_video"):
                     continue
-
-                vid = post.media.get("reddit_video") or post.secure_media.get("reddit_video") if post.secure_media else {}
-                url = vid.get("fallback_url")
-                if not url or url in blacklist_urls or url in download_failures or not url.endswith(".mp4"):
-                    logger.info(f"Post {post.id} skipped: invalid or blocked URL.")
+                if not post.is_video and not any(
+                    post.url.startswith(p) for p in ("https://v.redd.it", "https://i.redd.it", "https://youtube.com", "https://youtu.be")
+                ):
                     continue
-
-                duration = vid.get("duration")
-                if duration is None or not (10 <= duration <= 100):
-                    logger.info(f"Post {post.id} skipped: duration {duration} not in range.")
+                if post.score < thresh["score"] and post.num_comments < thresh["comments"]:
                     continue
-
-                if post.score < thresh["score"] or post.num_comments < thresh["comments"]:
-                    logger.info(f"Post {post.id} skipped: score {post.score} or comments {post.num_comments} too low.")
-                    continue
-
-                if not await huggingface_filter(post.title):
-                    logger.info(f"Post {post.id} filtered out by HF.")
-                    continue
-
-                seen_post_ids.add(post.id)
-                save_state()
-                results.append((post.id, post.title, url))
-
+                results.append((post.id, post.title, post.url))
         except Exception as e:
-            logger.error(f"Error fetching from subreddit {sub}: {e}")
-
+            logger.error(f"Error scraping subreddit {sub}: {e}")
+    random.shuffle(results)
     return results
 
-async def download_file(url: str, output_path: str, max_retries=5) -> Optional[str]:
-    headers = {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Referer": "https://www.reddit.com/",
-        "Accept-Language": "en-US,en;q=0.9"
-    }
-
-    for attempt in range(1, max_retries + 1):
+async def download_file(url: str, path: str, retries: int = 5) -> Optional[str]:
+    headers = {"User-Agent": random.choice(USER_AGENTS)}
+    for attempt in range(retries):
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, timeout=90) as resp:
+                async with session.get(url, headers=headers, timeout=60) as resp:
                     if resp.status != 200:
-                        logger.warning(f"[{resp.status}] {url}")
-                        await asyncio.sleep(1)
                         continue
-
-                    with open(output_path, "wb") as f:
-                        async for chunk in resp.content.iter_chunked(65536):
+                    with open(path, "wb") as f:
+                        async for chunk in resp.content.iter_chunked(1024 * 64):
                             f.write(chunk)
-
-                    logger.info(f"Downloaded: {output_path}")
-                    return output_path
-        except Exception as e:
-            logger.warning(f"Attempt {attempt} failed for {url}: {e}")
+                    return path
+        except Exception:
             await asyncio.sleep(2 ** attempt)
-
-    download_failures.add(url)
-    save_state()
-    logger.error(f"Max retries reached. Failed to download: {url}")
     return None
 
 from editor import is_video_suitable
 
 async def scrape_video() -> Optional[Tuple[str, str]]:
     while True:
-        videos = await fetch_reddit_videos()
-        if not videos:
-            logger.warning("No suitable posts found, retrying immediately.")
-            continue
-
-        random.shuffle(videos)
-        for vid_id, title, url in videos:
-            logger.info(f"Checking: https://redd.it/{vid_id}")
-            output_path = os.path.join(DOWNLOAD_DIR, f"{vid_id}.mp4")
-            await asyncio.sleep(random.uniform(1, 2))
-
-            path = await download_file(url, output_path)
-            if path and is_video_suitable(path):
-                return path, title
-
-            if path:
-                try:
-                    os.remove(path)
-                    logger.info(f"Deleted unsuitable file: {path}")
-                except Exception as e:
-                    logger.error(f"Delete failed: {e}")
-
-        logger.info("No usable videos from this batch. Looping again...")
+        candidates = await fetch_candidates()
+        if not candidates:
+            continue  # Don't sleep — retry aggressively
+        for pid, title, url in candidates:
+            logger.info(f"Trying post {pid}: {url}")
+            seen_post_ids.add(pid)
+            save_state()
+            out_path = os.path.join(DOWNLOAD_DIR, f"{pid}.mp4")
+            if not await download_file(url, out_path):
+                logger.warning(f"Download failed: {url}")
+                download_failures.add(url)
+                continue
+            if is_video_suitable(out_path):
+                return out_path, title
+            os.remove(out_path)  # Not suitable
+            logger.info(f"Rejected: {pid} — unsuitable")
+        await asyncio.sleep(0.5)  # minimal backoff between rounds
 
 def cleanup_files(paths: List[str]):
     for p in paths:
         try:
-            if os.path.exists(p):
-                os.remove(p)
-                logger.info(f"Deleted file: {p}")
-        except Exception as e:
-            logger.error(f"Cleanup error: {e}")
-
-async def check_ip_reputation():
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get("https://ipinfo.io/json") as resp:
-                if resp.status != 200:
-                    logger.warning("IP info fetch failed.")
-                    return False
-                ip = (await resp.json()).get("ip")
-                logger.info(f"Current external IP: {ip}")
-                return True
-    except Exception as e:
-        logger.warning(f"IP check error: {e}")
-        return False
+            os.remove(p)
+        except:
+            pass
 
 load_state()
