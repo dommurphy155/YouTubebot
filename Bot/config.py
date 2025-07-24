@@ -1,49 +1,63 @@
 import os
 from datetime import timedelta
 
-# Telegram configuration (from environment)
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+# ========== Environment Variables (Fail-safe Fallbacks) ==========
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-# Reddit API configuration (from environment)
-REDDIT_CLIENT_ID = os.environ["REDDIT_CLIENT_ID"]
-REDDIT_CLIENT_SECRET = os.environ["REDDIT_CLIENT_SECRET"]
-REDDIT_USER_AGENT = os.environ["REDDIT_USER_AGENT"]
-REDDIT_USERNAME = os.environ["REDDIT_USERNAME"]
-REDDIT_PASSWORD = os.environ["REDDIT_PASSWORD"]
+REDDIT_CLIENT_ID = os.environ.get("REDDIT_CLIENT_ID", "")
+REDDIT_CLIENT_SECRET = os.environ.get("REDDIT_CLIENT_SECRET", "")
+REDDIT_USER_AGENT = os.environ.get("REDDIT_USER_AGENT", "TelegramVideoBot/1.0 by u/your_username")
+REDDIT_USERNAME = os.environ.get("REDDIT_USERNAME", "")
+REDDIT_PASSWORD = os.environ.get("REDDIT_PASSWORD", "")
 
-# Subreddits to scrape (no URLs — just slugs)
+# ========== Subreddit Sources ==========
 SOURCE_SUBREDDITS = [
-    "PublicFreakout", "Unexpected", "WatchPeopleDieInside", "NextFuckingLevel",
-    "instant_regret", "holdmyjuicebox", "blursedimages", "IdiotsInCars",
-    "youtubehaiku", "ContentCreators", "NewTubers", "AskReddit", "AITA", "nosleep"
-    
+    "PublicFreakout",
+    "Unexpected",
+    "WatchPeopleDieInside",
+    "NextFuckingLevel",
+    "instant_regret",
+    "holdmyjuicebox",
+    "blursedimages",
+    "IdiotsInCars",
+    "youtubehaiku",
+    "ContentCreators",
+    "NewTubers",
+    "AskReddit",
+    "AITA",
+    "nosleep",
 ]
 
-# Video filtering rules
-MIN_DURATION_SECONDS = 20
-MAX_DURATION_SECONDS = 60
-MIN_SCORE = 5000
-MIN_COMMENTS = 12000
+# ========== Video Filtering ==========
+MIN_DURATION_SECONDS = 20         # Skip anything shorter
+MAX_DURATION_SECONDS = 60         # Skip anything longer
+MIN_SCORE = 5000                  # Engagement threshold
+MIN_COMMENTS = 12000              # Popularity filter
 
-# Scheduling & limits
+# ========== Processing Limits ==========
 MAX_VIDEOS_PER_RUN = 5
-SCRAPE_INTERVAL = timedelta(hours=1)  # Used by scheduler (if needed)
+SCRAPE_INTERVAL = timedelta(minutes=45)  # For external scheduler (optional)
 
-# Paths
+# ========== Local Paths ==========
 DOWNLOAD_DIR = "downloads"
 EDITED_DIR = "edited"
+LOG_DIR = "logs"
 
-# yt-dlp config
-YTDLP_FORMAT = "bv*+ba/b"
-YTDLP_RETRIES = 2
-YTDLP_TIMEOUT = 30
+# ========== yt-dlp Settings ==========
+YTDLP_FORMAT = "bv*+ba/b"     # Best video + audio combo fallback
+YTDLP_RETRIES = 3
+YTDLP_TIMEOUT = 30            # Seconds
 
-# FFmpeg config
+# ========== FFmpeg Settings ==========
 OUTPUT_RESOLUTION = "1080x1920"
 CRF = 25
 PRESET = "fast"
 
-# Misc
+# ========== AI Render Preferences ==========
+PRIMARY_RENDER = "shotstack"     # Options: shotstack, huggingface
+FALLBACK_RENDER = "editor"       # Local fallback if APIs fail
+
+# ========== Misc ==========
 USER_AGENT = REDDIT_USER_AGENT
 VERSION = "1.0.0"
