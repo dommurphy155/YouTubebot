@@ -11,17 +11,16 @@ import editor
 import uploader
 import status
 
-from telegram import Update
+from telegram import Bot, Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# Logger setup
+# --- Logging ---
 logger = logging.getLogger("TelegramVideoBot")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Async shutdown event
 shutdown_event = asyncio.Event()
 
-# Environment variables (injected via systemd)
+# --- Environment ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
@@ -29,19 +28,17 @@ if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
     logger.critical("TELEGRAM_TOKEN and TELEGRAM_CHAT_ID must be set in environment.")
     sys.exit(1)
 
-# yt-dlp binary path (inside venv)
+alert_bot = Bot(token=TELEGRAM_TOKEN)
 YTDLP_PATH = "/home/ubuntu/YouTubebot/venv/bin/yt-dlp"
 
-# Telegram Bot instance for alerts (use same token)
-from telegram import Bot
-alert_bot = Bot(token=TELEGRAM_TOKEN)
 
-
+# --- Graceful Shutdown ---
 def handle_shutdown(signum, frame):
     logger.info(f"Shutdown signal ({signum}) received.")
     shutdown_event.set()
 
 
+# --- yt-dlp Updater ---
 def update_ytdlp():
     try:
         result = subprocess.run([YTDLP_PATH, "-U"], capture_output=True, text=True, timeout=60)
@@ -53,32 +50,20 @@ def update_ytdlp():
         logger.error(f"yt-dlp update exception: {e}")
 
 
+# --- Telegram Alert Wrapper ---
 async def send_alert_message(text: str):
     try:
         await alert_bot.send_message(
             chat_id=TELEGRAM_CHAT_ID,
             text=text,
             parse_mode="Markdown",
-            disable_web_page_preview=True,
-            disable_notification=False
+            disable_web_page_preview=True
         )
     except Exception as e:
         logger.error(f"Failed to send alert message: {e}")
 
 
-async def send_startup_alert():
-    msg = (
-        f"🚀 *Bot Startup Alert*\n\n"
-        f"🕒 Uptime: `{status.get_uptime()}`\n"
-        f"💻 CPU: `{status.get_cpu_usage()}`\n"
-        f"🧠 RAM: `{status.get_ram_usage()}`\n"
-        f"💾 Disk: `{status.get_disk_usage()}`\n"
-        f"📉 Load: `{status.get_system_load()}`\n"
-        f"📦 Version: `{status.get_bot_version()}`\n"
-    )
-    await send_alert_message(msg)
-
-
+# --- Telegram Commands ---
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_chat.id) != TELEGRAM_CHAT_ID:
         return
@@ -96,19 +81,30 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await update.message.reply_text(msg, parse_mode="Markdown")
     except Exception as e:
-        logger.error(f"Error in /status command: {e}")
+        logger.error(f"/status error: {e}")
 
 
+async def send_startup_alert():
+    msg = (
+        f"🚀 *Bot Startup Alert*\n\n"
+        f"🕒 Uptime: `{status.get_uptime()}`\n"
+        f"💻 CPU: `{status.get_cpu_usage()}`\n"
+        f"🧠 RAM: `{status.get_ram_usage()}`\n"
+        f"💾 Disk: `{status.get_disk_usage()}`\n"
+        f"📉 Load: `{status.get_system_load()}`\n"
+        f"📦 Version: `{status.get_bot_version()}`\n"
+    )
+    await send_alert_message(msg)
+
+
+# --- Telegram Bot Lifecycle ---
 async def start_telegram_bot():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("status", status_command))
     await app.initialize()
     await app.start()
     logger.info("Telegram bot started.")
-
-    # Send startup alert right after bot starts
     await send_startup_alert()
-
     return app
 
 
@@ -118,6 +114,7 @@ async def stop_telegram_bot(app):
     logger.info("Telegram bot stopped.")
 
 
+# --- Core Loop ---
 async def main_loop():
     update_ytdlp()
     app = await start_telegram_bot()
@@ -125,24 +122,23 @@ async def main_loop():
     try:
         while not shutdown_event.is_set():
             try:
-                result = None
                 attempt = 0
-
+                result = None
                 while not result and not shutdown_event.is_set():
                     attempt += 1
                     result = await scraper.scrape_video()
                     if not result:
-                        logger.warning(f"No suitable videos found. Attempt #{attempt}")
+                        logger.warning(f"No video found. Attempt #{attempt}")
                         await asyncio.sleep(5)
 
                 if shutdown_event.is_set():
-                    logger.info("Shutdown requested before processing video.")
+                    logger.info("Shutdown before processing.")
                     return
 
                 video_path, title = result
 
                 if not editor.is_video_suitable(video_path):
-                    logger.info(f"Video {video_path} deemed unsuitable by editor. Cleaning up.")
+                    logger.info(f"Video {video_path} unsuitable. Skipping.")
                     scraper.cleanup_files([video_path])
                     continue
 
@@ -151,52 +147,39 @@ async def main_loop():
 
                 scraper.cleanup_files([video_path, edited_path])
 
-                for _ in range(int(random.uniform(10, 30))):
+                for _ in range(random.randint(10, 30)):
                     if shutdown_event.is_set():
-                        logger.info("Shutdown requested during cooldown. Exiting main loop.")
                         return
                     await asyncio.sleep(1)
 
             except Exception as e:
-                # Send critical failure alert with recommended fix
-                critical_msg = (
+                logger.error(f"Main loop error: {e}")
+                await send_alert_message(
                     f"❗ *Critical Bot Failure*\n"
                     f"```\n{e}\n```\n"
-                    f"⚠️ Immediate attention required.\n"
-                    f"💡 Recommended: Check logs and restart bot if needed."
+                    f"⚠️ Check logs and restart if needed."
                 )
-                logger.error(f"Main loop error: {e}")
-                await send_alert_message(critical_msg)
-
-                for _ in range(10):
-                    if shutdown_event.is_set():
-                        logger.info("Shutdown requested during error sleep. Exiting.")
-                        return
-                    await asyncio.sleep(1)
+                await asyncio.sleep(10)
     finally:
         await stop_telegram_bot(app)
 
 
 if __name__ == "__main__":
-    signal.signal(signal.SIGTERM, handle_shutdown)
     signal.signal(signal.SIGINT, handle_shutdown)
+    signal.signal(signal.SIGTERM, handle_shutdown)
 
     try:
         asyncio.run(main_loop())
     except Exception as e:
-        logger.error(f"Bot crashed: {e}")
-        # Send alert on crash (blocking)
-        import asyncio
+        logger.critical(f"Fatal bot error: {e}")
         async def crash_alert():
-            msg = (
-                f"💥 *Bot Crash*\n"
-                f"```\n{e}\n```\n"
-                f"⚠️ Immediate manual intervention required."
-            )
             try:
-                await send_alert_message(msg)
-            except Exception:
+                await send_alert_message(
+                    f"💥 *Bot Crash*\n"
+                    f"```\n{e}\n```\n"
+                    f"⚠️ Manual fix needed."
+                )
+            except:
                 pass
-
         asyncio.run(crash_alert())
         sys.exit(1)
