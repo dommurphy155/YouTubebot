@@ -1,4 +1,4 @@
-Yes just send both files back completely fixed: #!/usr/bin/env python3
+main.py
 import asyncio
 import atexit
 import os
@@ -355,9 +355,9 @@ if __name__ == "__main__":
     )
     asyncio.run(app.run_polling())
     _handle_exit()
-(myenv) ubuntu@w
 
-This is utils.py: import os
+This is utils.py:
+import os
 import shutil
 from collections import deque
 
